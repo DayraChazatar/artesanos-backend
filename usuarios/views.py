@@ -2,6 +2,14 @@ from rest_framework import viewsets
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password
+import io
+from django.http import HttpResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
  
 from .models import Usuario, Categoria, Producto, Kardex
 from .serializers import (
@@ -81,3 +89,223 @@ class KardexViewSet(viewsets.ModelViewSet):
         if producto_id:
             qs = qs.filter(producto_id=producto_id)
         return qs
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def estilo_excel(ws, headers):
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='B45309')
+        cell.alignment = Alignment(horizontal='center')
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max_len + 4
+
+
+def estilo_pdf(elements, titulo, headers, data):
+    styles = getSampleStyleSheet()
+    elements.append(Paragraph(f'<b>{titulo}</b>', styles['Title']))
+    elements.append(Spacer(1, 12))
+    tabla = Table([headers] + data)
+    tabla.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#B45309')),
+        ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
+        ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE',   (0, 0), (-1, 0), 10),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#FEF3C7')]),
+        ('GRID',       (0, 0), (-1, -1), 0.5, colors.HexColor('#D97706')),
+        ('FONTSIZE',   (0, 1), (-1, -1), 9),
+        ('ALIGN',      (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    elements.append(tabla)
+
+
+# ── Reportes Productos ───────────────────────────────────────────────────────
+@api_view(['GET'])
+def reporte_productos_excel(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Productos'
+
+    headers = ['Código', 'Lote', 'Nombre', 'Categoría', 'Precio neto', 'IVA (%)', 'Descuento', 'Stock', 'Stock mín.', 'Stock máx.']
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+
+    for row, p in enumerate(productos, 2):
+        ws.append([
+            p.codigo_barra or '—',
+            p.lote or '—',
+            p.nombre,
+            p.categoria.nombre if p.categoria else '—',
+            float(p.precio_neto),
+            p.iva,
+            f'Sí ({p.valor_descuento}%)' if p.descuento else 'No',
+            p.cantidad,
+            p.stock_minimo,
+            p.stock_maximo,
+        ])
+
+    estilo_excel(ws, headers)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="productos.xlsx"'})
+
+
+@api_view(['GET'])
+def reporte_productos_pdf(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+    elements = []
+    headers = ['Código', 'Nombre', 'Categoría', 'Precio neto', 'IVA', 'Stock']
+    data = [[p.codigo_barra or '—', p.nombre, p.categoria.nombre if p.categoria else '—',
+             f'${float(p.precio_neto):,.0f}', f'{p.iva}%', str(p.cantidad)] for p in productos]
+    estilo_pdf(elements, 'Reporte de Productos — Pakari Shop', headers, data)
+    doc.build(elements)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/pdf',
+                        headers={'Content-Disposition': 'attachment; filename="productos.pdf"'})
+
+
+# ── Reportes Inventario ──────────────────────────────────────────────────────
+@api_view(['GET'])
+def reporte_inventario_excel(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Inventario'
+    headers = ['Producto', 'Código', 'Stock actual', 'Stock mínimo', 'Stock máximo', 'Estado']
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    for p in productos:
+        ws.append([p.nombre, p.codigo_barra or '—', p.cantidad, p.stock_minimo, p.stock_maximo, p.estado_stock])
+
+    estilo_excel(ws, headers)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="inventario.xlsx"'})
+
+
+@api_view(['GET'])
+def reporte_inventario_pdf(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    elements = []
+    headers = ['Producto', 'Código', 'Stock actual', 'Stock mín.', 'Stock máx.', 'Estado']
+    data = [[p.nombre, p.codigo_barra or '—', str(p.cantidad), str(p.stock_minimo), str(p.stock_maximo), p.estado_stock] for p in productos]
+    estilo_pdf(elements, 'Reporte de Inventario — Pakari Shop', headers, data)
+    doc.build(elements)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/pdf',
+                        headers={'Content-Disposition': 'attachment; filename="inventario.pdf"'})
+
+
+# ── Reportes Kardex ──────────────────────────────────────────────────────────
+@api_view(['GET'])
+def reporte_kardex_excel(request):
+    artesano_id = request.query_params.get('artesano')
+    kardex = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('-fecha') if artesano_id else Kardex.objects.all().order_by('-fecha')
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Movimientos'
+    headers = ['Producto', 'Tipo', 'Cantidad', 'Fecha', 'Nota']
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    for k in kardex:
+        ws.append([k.producto.nombre, k.tipo, k.cantidad, str(k.fecha), k.nota or '—'])
+
+    estilo_excel(ws, headers)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="kardex.xlsx"'})
+
+
+@api_view(['GET'])
+def reporte_kardex_pdf(request):
+    artesano_id = request.query_params.get('artesano')
+    kardex = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('-fecha') if artesano_id else Kardex.objects.all().order_by('-fecha')
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+    elements = []
+    headers = ['Producto', 'Tipo', 'Cantidad', 'Fecha', 'Nota']
+    data = [[k.producto.nombre, k.tipo, str(k.cantidad), str(k.fecha), k.nota or '—'] for k in kardex]
+    estilo_pdf(elements, 'Historial de Movimientos — Pakari Shop', headers, data)
+    doc.build(elements)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/pdf',
+                        headers={'Content-Disposition': 'attachment; filename="kardex.pdf"'})
+
+
+# ── Reportes Contable ────────────────────────────────────────────────────────
+@api_view(['GET'])
+def reporte_contable_excel(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Contable'
+    headers = ['Producto', 'Precio neto', 'IVA (%)', 'Precio con IVA', 'Descuento', 'Precio final', 'Stock', 'Valor inventario']
+    for col, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=h)
+    for p in productos:
+        ws.append([
+            p.nombre,
+            float(p.precio_neto),
+            p.iva,
+            round(p.precio_con_iva, 2),
+            f'{p.valor_descuento}%' if p.descuento else 'No',
+            round(p.precio_final, 2),
+            p.cantidad,
+            round(p.precio_final * p.cantidad, 2),
+        ])
+
+    estilo_excel(ws, headers)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename="contable.xlsx"'})
+
+
+@api_view(['GET'])
+def reporte_contable_pdf(request):
+    artesano_id = request.query_params.get('artesano')
+    productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+    elements = []
+    headers = ['Producto', 'Precio neto', 'IVA', 'Precio con IVA', 'Precio final', 'Stock', 'Valor inventario']
+    data = [[
+        p.nombre,
+        f'${float(p.precio_neto):,.0f}',
+        f'{p.iva}%',
+        f'${p.precio_con_iva:,.0f}',
+        f'${p.precio_final:,.0f}',
+        str(p.cantidad),
+        f'${p.precio_final * p.cantidad:,.0f}',
+    ] for p in productos]
+    estilo_pdf(elements, 'Reporte Contable — Pakari Shop', headers, data)
+    doc.build(elements)
+    buffer.seek(0)
+    return HttpResponse(buffer, content_type='application/pdf',
+                        headers={'Content-Disposition': 'attachment; filename="contable.pdf"'})
