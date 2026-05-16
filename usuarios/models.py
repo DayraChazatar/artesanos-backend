@@ -1,4 +1,5 @@
 from django.db import models
+from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
  
  
@@ -126,3 +127,23 @@ class Kardex(models.Model):
  
     def __str__(self):
         return f"{self.tipo} — {self.producto.nombre} ({self.cantidad})"
+    
+class Notificacion(models.Model):
+    TIPOS = [
+        ('pedido', 'Pedido'),
+        ('stock', 'Stock'),
+        ('sistema', 'Sistema'),
+    ]
+    tipo        = models.CharField(max_length=20, choices=TIPOS)
+    titulo      = models.CharField(max_length=100)
+    detalle     = models.TextField()
+    leida       = models.BooleanField(default=False)
+    fecha       = models.DateTimeField(auto_now_add=True)
+    referencia_id = models.IntegerField(null=True, blank=True)  # ID del pedido o producto relacionado
+    ruta        = models.CharField(max_length=100, blank=True)  # ej: '/pedidos'
+
+    class Meta:
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return f"[{self.tipo}] {self.titulo}"

@@ -1,4 +1,5 @@
 from django.contrib import admin
+from .models import Notificacion
 from .models import Usuario, Categoria, Producto, Kardex
 
 @admin.register(Kardex)

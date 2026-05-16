@@ -2,9 +2,10 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework import routers
 
+# Agrega el import
 from usuarios.views import (
     UsuarioViewSet, CategoriaViewSet,
-    ProductoViewSet, KardexViewSet, login,
+    ProductoViewSet, KardexViewSet, NotificacionViewSet, login,  # ← agrega NotificacionViewSet
     reporte_productos_excel, reporte_productos_pdf,
     reporte_inventario_excel, reporte_inventario_pdf,
     reporte_kardex_excel, reporte_kardex_pdf,
@@ -16,6 +17,7 @@ router.register(r'usuarios',   UsuarioViewSet)
 router.register(r'categorias', CategoriaViewSet)
 router.register(r'productos',  ProductoViewSet)
 router.register(r'kardex',     KardexViewSet)
+router.register(r'notificaciones', NotificacionViewSet)
 
 urlpatterns = [
     path('admin/',     admin.site.urls),

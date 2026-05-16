@@ -10,6 +10,14 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+# Agrega Notificacion al import de modelos
+from .models import Usuario, Categoria, Producto, Kardex, Notificacion
+
+# Agrega el serializer
+from .serializers import (
+    UsuarioSerializer, CategoriaSerializer,
+    ProductoSerializer, KardexSerializer, NotificacionSerializer,
+)
  
 from .models import Usuario, Categoria, Producto, Kardex
 from .serializers import (
@@ -75,20 +83,42 @@ class ProductoViewSet(viewsets.ModelViewSet):
         if artesano_id:
             qs = qs.filter(artesano_id=artesano_id)
         return qs
- 
+    
+# ── Helper notificaciones ────────────────────────────────────────────────────
+def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
+    Notificacion.objects.create(
+        tipo=tipo,
+        titulo=titulo,
+        detalle=detalle,
+        referencia_id=referencia_id,
+        ruta=ruta,
+    )
  
 # ── Kardex ───────────────────────────────────────────────────────────────────
 class KardexViewSet(viewsets.ModelViewSet):
     queryset = Kardex.objects.all().order_by('-fecha')
     serializer_class = KardexSerializer
- 
+
     def get_queryset(self):
-        """Filtra por producto si se pasa ?producto=<id>"""
         qs = super().get_queryset()
         producto_id = self.request.query_params.get('producto')
         if producto_id:
             qs = qs.filter(producto_id=producto_id)
         return qs
+
+    def perform_create(self, serializer):
+        kardex = serializer.save()
+        # Verifica stock bajo después de guardar el movimiento
+        producto = kardex.producto
+        if producto.cantidad <= producto.stock_minimo:
+            crear_notificacion(
+                tipo='stock',
+                titulo='Stock bajo',
+                detalle=f'El producto "{producto.nombre}" tiene solo {producto.cantidad} unidades disponibles.',
+                referencia_id=producto.id,
+                ruta='/inventario',
+            )
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def estilo_excel(ws, headers):
     for col, header in enumerate(headers, 1):
@@ -309,3 +339,25 @@ def reporte_contable_pdf(request):
     buffer.seek(0)
     return HttpResponse(buffer, content_type='application/pdf',
                         headers={'Content-Disposition': 'attachment; filename="contable.pdf"'})
+
+# ── Notificaciones ───────────────────────────────────────────────────────────
+class NotificacionViewSet(viewsets.ModelViewSet):
+    queryset = Notificacion.objects.all()
+    serializer_class = NotificacionSerializer
+
+    @action(detail=False, methods=['patch'], url_path='leer-todas')
+    def leer_todas(self, request):
+        Notificacion.objects.filter(leida=False).update(leida=True)
+        return Response({'ok': True})
+
+    @action(detail=True, methods=['patch'], url_path='leer')
+    def leer(self, request, pk=None):
+        notificacion = self.get_object()
+        notificacion.leida = True
+        notificacion.save()
+        return Response({'ok': True})
+
+    @action(detail=False, methods=['get'], url_path='no-leidas')
+    def no_leidas(self, request):
+        count = Notificacion.objects.filter(leida=False).count()
+        return Response({'count': count})

@@ -82,4 +82,10 @@ class KardexSerializer(serializers.ModelSerializer):
     class Meta:
         model = Kardex
         fields = ['id', 'producto', 'producto_nombre', 'tipo', 'cantidad', 'fecha', 'nota']
- 
+
+from .models import Notificacion
+
+class NotificacionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Notificacion
+        fields = ['id', 'tipo', 'titulo', 'detalle', 'leida', 'fecha', 'referencia_id', 'ruta']
