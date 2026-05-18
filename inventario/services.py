@@ -11,7 +11,25 @@ from .models import Kardex
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS INTERNOS
 # ─────────────────────────────────────────────────────────────────────────────
-
+def _verificar_stock_minimo(producto):
+    """Crea notificación si el stock disponible quedó en o bajo el mínimo."""
+    from usuarios.models import Notificacion
+    disponible = producto.cantidad - getattr(producto, 'cantidad_reservada', 0)
+    if producto.stock_minimo > 0 and disponible <= producto.stock_minimo:
+        ya_existe = Notificacion.objects.filter(
+            tipo='stock',
+            referencia_id=producto.id,
+            leida=False,
+        ).exists()
+        if not ya_existe:
+            Notificacion.objects.create(
+                tipo='stock',
+                titulo=f'⚠️ Stock mínimo: {producto.nombre}',
+                detalle=f'"{producto.nombre}" tiene {disponible} unidades disponibles, igual o por debajo del mínimo permitido ({producto.stock_minimo}).',
+                referencia_id=producto.id,
+                ruta='/inventario',
+            )
+            
 def _precio_pvp(producto):
     """Retorna el precio de venta al público o None si no está definido."""
     return getattr(producto, 'precio_pvp', None) or None
@@ -108,6 +126,8 @@ def registrar_reposicion(*, producto, cantidad, nota='', creado_por, fecha=None)
         nota      = nota or f'Reposición de stock — {producto.nombre}',
         creado_por= creado_por,
     )
+    _verificar_stock_minimo(producto) 
+    return movimiento
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +177,7 @@ def registrar_ajuste_manual(*, producto, cantidad_raw, nota='', fecha, creado_po
         )
 
     producto.cantidad = prod.cantidad
+    _verificar_stock_minimo(producto)
     return movimiento
 
 
@@ -201,6 +222,7 @@ def registrar_reserva(*, producto, cantidad, pedido_ref, creado_por='Sistema'):
         )
 
     producto.cantidad_reservada = prod.cantidad_reservada
+    _verificar_stock_minimo(producto) 
     return movimiento
 
 
@@ -248,6 +270,7 @@ def registrar_venta(*, producto, cantidad, pedido_ref, creado_por='Sistema'):
 
     producto.cantidad = prod.cantidad
     producto.cantidad_reservada = prod.cantidad_reservada
+    _verificar_stock_minimo(producto)  
     return movimiento
 
 
