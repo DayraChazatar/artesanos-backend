@@ -1,5 +1,9 @@
+# usuarios/views.py
 from rest_framework import viewsets
-from rest_framework.decorators import api_view, action
+from rest_framework.authtoken.models import Token
+from django.contrib.auth.models import User
+from rest_framework.decorators import api_view, action, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password
 import io
@@ -10,81 +14,116 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-# Agrega Notificacion al import de modelos
-from .models import Usuario, Categoria, Producto, Kardex, Notificacion
 
-# Agrega el serializer
+# ── Imports de modelos ────────────────────────────────────────────────────────
+from .models import Usuario, Categoria, Producto, Notificacion
+from inventario.models import Kardex
+
+# ── Imports de serializers ────────────────────────────────────────────────────
 from .serializers import (
-    UsuarioSerializer, CategoriaSerializer,
-    ProductoSerializer, KardexSerializer, NotificacionSerializer,
+    UsuarioSerializer,
+    CategoriaSerializer,
+    ProductoSerializer,
+    CatalogoProductoSerializer,
+    KardexSerializer,
+    NotificacionSerializer,
 )
- 
-from .models import Usuario, Categoria, Producto, Kardex
-from .serializers import (
-    UsuarioSerializer, CategoriaSerializer,
-    ProductoSerializer, KardexSerializer,
-)
- 
- 
-# ── Usuarios ────────────────────────────────────────────────────────────────
+
+
+# ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
     queryset = Usuario.objects.all()
     serializer_class = UsuarioSerializer
- 
+
     @action(detail=False, methods=['get'], url_path='artesanos')
     def artesanos(self, request):
-        """Devuelve solo usuarios de tipo artesano."""
         qs = Usuario.objects.filter(tipo='artesano')
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
- 
- 
+
+
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def login(request):
     correo   = request.data.get('correo')
     password = request.data.get('password')
     try:
-        user = Usuario.objects.get(correo=correo)
-        if check_password(password, user.password):
+        usuario = Usuario.objects.get(correo=correo)
+        if check_password(password, usuario.password):
+            # Obtener o crear el usuario de Django auth ligado
+            auth_user, _ = User.objects.get_or_create(username=correo)
+            auth_user.set_password(password)
+            auth_user.save()
+            # Generar o recuperar token
+            token, _ = Token.objects.get_or_create(user=auth_user)
             return Response({
                 'success': True,
-                'id':      user.id,
-                'nombre':  user.nombre,
-                'tipo':    user.tipo,
+                'id':      usuario.id,
+                'nombre':  usuario.nombre,
+                'tipo':    usuario.tipo,
+                'token':   token.key,
             })
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
- 
- 
-# ── Categorías ───────────────────────────────────────────────────────────────
+# ── Categorías ────────────────────────────────────────────────────────────────
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
- 
+    permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        print("DATA RECIBIDA:", request.data)      # ← agregar
+        ser = CategoriaSerializer(data=request.data)
+        ser.is_valid()
+        print("ERRORES:", ser.errors)              # ← agregar
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
-        """Filtra por artesano si se pasa ?artesano=<id>"""
         qs = super().get_queryset()
         artesano_id = self.request.query_params.get('artesano')
         if artesano_id:
             qs = qs.filter(artesano_id=artesano_id)
         return qs
- 
- 
-# ── Productos ────────────────────────────────────────────────────────────────
+
+# ── Productos ─────────────────────────────────────────────────────────────────
 class ProductoViewSet(viewsets.ModelViewSet):
     queryset = Producto.objects.all()
     serializer_class = ProductoSerializer
- 
+    permission_classes = [AllowAny]
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+    
+    def create(self, request, *args, **kwargs):
+        print("🔥 ENTRO AL CREATE")
+        print("DATA:", request.data)
+        print("FILES:", request.FILES)
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
-        """Filtra por artesano si se pasa ?artesano=<id>"""
         qs = super().get_queryset()
+
         artesano_id = self.request.query_params.get('artesano')
+
         if artesano_id:
             qs = qs.filter(artesano_id=artesano_id)
+
         return qs
-    
-# ── Helper notificaciones ────────────────────────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def catalogo_productos(request):
+    productos = Producto.objects.filter(cantidad__gt=0)
+    serializer = CatalogoProductoSerializer(
+        productos, many=True, context={'request': request}  # ← agregar context
+    )
+    return Response(serializer.data)
+
+
+# ── Helper notificaciones ─────────────────────────────────────────────────────
 def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
     Notificacion.objects.create(
         tipo=tipo,
@@ -93,11 +132,13 @@ def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
         referencia_id=referencia_id,
         ruta=ruta,
     )
- 
-# ── Kardex ───────────────────────────────────────────────────────────────────
+
+
+# ── Kardex ────────────────────────────────────────────────────────────────────
 class KardexViewSet(viewsets.ModelViewSet):
     queryset = Kardex.objects.all().order_by('-fecha')
     serializer_class = KardexSerializer
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -108,7 +149,6 @@ class KardexViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         kardex = serializer.save()
-        # Verifica stock bajo después de guardar el movimiento
         producto = kardex.producto
         if producto.cantidad <= producto.stock_minimo:
             crear_notificacion(
@@ -119,7 +159,8 @@ class KardexViewSet(viewsets.ModelViewSet):
                 ruta='/inventario',
             )
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+
+# ── Helpers Excel/PDF ─────────────────────────────────────────────────────────
 def estilo_excel(ws, headers):
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -150,34 +191,25 @@ def estilo_pdf(elements, titulo, headers, data):
     elements.append(tabla)
 
 
-# ── Reportes Productos ───────────────────────────────────────────────────────
+# ── Reportes Productos ────────────────────────────────────────────────────────
 @api_view(['GET'])
 def reporte_productos_excel(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     wb = Workbook()
     ws = wb.active
     ws.title = 'Productos'
-
     headers = ['Código', 'Lote', 'Nombre', 'Categoría', 'Precio neto', 'IVA (%)', 'Descuento', 'Stock', 'Stock mín.', 'Stock máx.']
     for col, h in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=h)
-
-    for row, p in enumerate(productos, 2):
+    for p in productos:
         ws.append([
-            p.codigo_barra or '—',
-            p.lote or '—',
-            p.nombre,
+            p.codigo_barra or '—', p.lote or '—', p.nombre,
             p.categoria.nombre if p.categoria else '—',
-            float(p.precio_neto),
-            p.iva,
+            float(p.precio_neto), p.iva,
             f'Sí ({p.valor_descuento}%)' if p.descuento else 'No',
-            p.cantidad,
-            p.stock_minimo,
-            p.stock_maximo,
+            p.cantidad, p.stock_minimo, p.stock_maximo,
         ])
-
     estilo_excel(ws, headers)
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -190,7 +222,6 @@ def reporte_productos_excel(request):
 def reporte_productos_pdf(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
     elements = []
@@ -204,12 +235,11 @@ def reporte_productos_pdf(request):
                         headers={'Content-Disposition': 'attachment; filename="productos.pdf"'})
 
 
-# ── Reportes Inventario ──────────────────────────────────────────────────────
+# ── Reportes Inventario ───────────────────────────────────────────────────────
 @api_view(['GET'])
 def reporte_inventario_excel(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     wb = Workbook()
     ws = wb.active
     ws.title = 'Inventario'
@@ -218,7 +248,6 @@ def reporte_inventario_excel(request):
         ws.cell(row=1, column=col, value=h)
     for p in productos:
         ws.append([p.nombre, p.codigo_barra or '—', p.cantidad, p.stock_minimo, p.stock_maximo, p.estado_stock])
-
     estilo_excel(ws, headers)
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -231,7 +260,6 @@ def reporte_inventario_excel(request):
 def reporte_inventario_pdf(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     elements = []
@@ -244,21 +272,25 @@ def reporte_inventario_pdf(request):
                         headers={'Content-Disposition': 'attachment; filename="inventario.pdf"'})
 
 
-# ── Reportes Kardex ──────────────────────────────────────────────────────────
+# ── Reportes Kardex ───────────────────────────────────────────────────────────
 @api_view(['GET'])
 def reporte_kardex_excel(request):
     artesano_id = request.query_params.get('artesano')
     kardex = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('-fecha') if artesano_id else Kardex.objects.all().order_by('-fecha')
-
     wb = Workbook()
     ws = wb.active
     ws.title = 'Movimientos'
-    headers = ['Producto', 'Tipo', 'Cantidad', 'Fecha', 'Nota']
+    headers = ['Producto', 'Tipo', 'Subtipo', 'Cantidad', 'Stock resultante', 'Precio unit.', 'Origen', 'Pedido ref.', 'Fecha', 'Nota', 'Registrado por']
     for col, h in enumerate(headers, 1):
         ws.cell(row=1, column=col, value=h)
     for k in kardex:
-        ws.append([k.producto.nombre, k.tipo, k.cantidad, str(k.fecha), k.nota or '—'])
-
+        ws.append([
+            k.producto.nombre, k.tipo, k.subtipo or '—',
+            k.cantidad, k.stock_resultante,
+            float(k.precio_unitario) if k.precio_unitario else '—',
+            k.origen, k.pedido_ref or '—',
+            str(k.fecha), k.nota or '—', k.creado_por,
+        ])
     estilo_excel(ws, headers)
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -271,12 +303,15 @@ def reporte_kardex_excel(request):
 def reporte_kardex_pdf(request):
     artesano_id = request.query_params.get('artesano')
     kardex = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('-fecha') if artesano_id else Kardex.objects.all().order_by('-fecha')
-
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
     elements = []
-    headers = ['Producto', 'Tipo', 'Cantidad', 'Fecha', 'Nota']
-    data = [[k.producto.nombre, k.tipo, str(k.cantidad), str(k.fecha), k.nota or '—'] for k in kardex]
+    headers = ['Producto', 'Tipo', 'Cantidad', 'Stock result.', 'Origen', 'Pedido', 'Fecha', 'Nota']
+    data = [[
+        k.producto.nombre, k.tipo, str(k.cantidad),
+        str(k.stock_resultante), k.origen,
+        k.pedido_ref or '—', str(k.fecha), k.nota or '—',
+    ] for k in kardex]
     estilo_pdf(elements, 'Historial de Movimientos — Pakari Shop', headers, data)
     doc.build(elements)
     buffer.seek(0)
@@ -284,12 +319,11 @@ def reporte_kardex_pdf(request):
                         headers={'Content-Disposition': 'attachment; filename="kardex.pdf"'})
 
 
-# ── Reportes Contable ────────────────────────────────────────────────────────
+# ── Reportes Contable ─────────────────────────────────────────────────────────
 @api_view(['GET'])
 def reporte_contable_excel(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     wb = Workbook()
     ws = wb.active
     ws.title = 'Contable'
@@ -298,16 +332,12 @@ def reporte_contable_excel(request):
         ws.cell(row=1, column=col, value=h)
     for p in productos:
         ws.append([
-            p.nombre,
-            float(p.precio_neto),
-            p.iva,
+            p.nombre, float(p.precio_neto), p.iva,
             round(p.precio_con_iva, 2),
             f'{p.valor_descuento}%' if p.descuento else 'No',
-            round(p.precio_final, 2),
-            p.cantidad,
+            round(p.precio_final, 2), p.cantidad,
             round(p.precio_final * p.cantidad, 2),
         ])
-
     estilo_excel(ws, headers)
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -320,19 +350,14 @@ def reporte_contable_excel(request):
 def reporte_contable_pdf(request):
     artesano_id = request.query_params.get('artesano')
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
-
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
     elements = []
     headers = ['Producto', 'Precio neto', 'IVA', 'Precio con IVA', 'Precio final', 'Stock', 'Valor inventario']
     data = [[
-        p.nombre,
-        f'${float(p.precio_neto):,.0f}',
-        f'{p.iva}%',
-        f'${p.precio_con_iva:,.0f}',
-        f'${p.precio_final:,.0f}',
-        str(p.cantidad),
-        f'${p.precio_final * p.cantidad:,.0f}',
+        p.nombre, f'${float(p.precio_neto):,.0f}', f'{p.iva}%',
+        f'${p.precio_con_iva:,.0f}', f'${p.precio_final:,.0f}',
+        str(p.cantidad), f'${p.precio_final * p.cantidad:,.0f}',
     ] for p in productos]
     estilo_pdf(elements, 'Reporte Contable — Pakari Shop', headers, data)
     doc.build(elements)
@@ -340,10 +365,12 @@ def reporte_contable_pdf(request):
     return HttpResponse(buffer, content_type='application/pdf',
                         headers={'Content-Disposition': 'attachment; filename="contable.pdf"'})
 
-# ── Notificaciones ───────────────────────────────────────────────────────────
+
+# ── Notificaciones ────────────────────────────────────────────────────────────
 class NotificacionViewSet(viewsets.ModelViewSet):
     queryset = Notificacion.objects.all()
     serializer_class = NotificacionSerializer
+    permission_classes = [AllowAny]
 
     @action(detail=False, methods=['patch'], url_path='leer-todas')
     def leer_todas(self, request):
