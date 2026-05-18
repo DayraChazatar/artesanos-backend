@@ -151,12 +151,17 @@ class Producto(models.Model):
 
     @property
     def precio_final(self):
-        precio = self.precio_con_iva
+    # Base: PVP si existe, sino precio_neto + IVA
+        if self.precio_pvp:
+          base = float(self.precio_pvp)
+        else:
+            base = float(self.precio_neto) * (1 + self.iva / 100)
 
+    # Aplicar descuento sobre la base
         if self.descuento and self.valor_descuento > 0:
-            return precio * (1 - self.valor_descuento / 100)
+           return base * (1 - self.valor_descuento / 100)
 
-        return precio
+        return base
 
     @property
     def estado_stock(self):

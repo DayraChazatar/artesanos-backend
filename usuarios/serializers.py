@@ -46,6 +46,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'categoria',
             'categoria_nombre',
             'precio_neto',
+            'precio_pvp',
             'iva',
             'descuento',
             'valor_descuento',
@@ -100,7 +101,7 @@ class CatalogoProductoSerializer(serializers.ModelSerializer):
         model  = Producto
         fields = [
             'id', 'nombre', 'categoria_nombre',
-            'precio_neto', 'precio_final',
+            'precio_neto', 'precio_pvp', 'precio_final',
             'iva', 'descuento', 'valor_descuento',
             'cantidad_disponible',
             'artesano_nombre', 'imagen_url',
