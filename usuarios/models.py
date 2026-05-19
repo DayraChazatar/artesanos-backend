@@ -143,7 +143,7 @@ class Producto(models.Model):
 
     @property
     def cantidad_disponible(self):
-        return self.cantidad - self.cantidad_reservada
+        return max(0, self.cantidad - self.cantidad_reservada)
 
     @property
     def precio_con_iva(self):

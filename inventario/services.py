@@ -116,7 +116,7 @@ def registrar_reposicion(*, producto, cantidad, nota='', creado_por, fecha=None)
         )
 
     subtipo = 'reposicion'
-    return _crear_movimiento(
+    movimiento = _crear_movimiento(
         producto  = producto,
         tipo      = 'Entrada',
         subtipo   = subtipo,
@@ -126,7 +126,7 @@ def registrar_reposicion(*, producto, cantidad, nota='', creado_por, fecha=None)
         nota      = nota or f'Reposición de stock — {producto.nombre}',
         creado_por= creado_por,
     )
-    _verificar_stock_minimo(producto) 
+    _verificar_stock_minimo(producto)
     return movimiento
 
 

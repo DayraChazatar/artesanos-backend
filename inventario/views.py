@@ -3,11 +3,13 @@ from datetime import date
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view
+
+
 
 from usuarios.models import Producto
 from usuarios.models import Usuario
@@ -34,15 +36,14 @@ from usuarios.models import Producto
 # ─── Helpers de stock ─────────────────────────────────────────────────────────
  
 def _reservar_stock(producto: Producto, cantidad: int):
-    """Resta de disponible y suma a reservado. Lanza ValueError si no hay stock."""
-    if producto.cantidad < cantidad:
+    disponible = producto.cantidad - getattr(producto, 'cantidad_reservada', 0)
+    if disponible < cantidad:
         raise ValueError(
-            f'Stock insuficiente para "{producto.nombre}": '
-            f'disponible {producto.cantidad}, solicitado {cantidad}.'
+            f'Stock disponible insuficiente para "{producto.nombre}": '
+            f'disponible {disponible}, solicitado {cantidad}.'
         )
-    producto.cantidad           -= cantidad
-    producto.cantidad_reservada  = getattr(producto, 'cantidad_reservada', 0) + cantidad
-    producto.save()
+    producto.cantidad_reservada = getattr(producto, 'cantidad_reservada', 0) + cantidad
+    producto.save(update_fields=['cantidad_reservada'])
  
  
 def _liberar_reserva(producto: Producto, cantidad: int):
@@ -178,6 +179,7 @@ TRANSICIONES_VALIDAS: dict[str, list[str]] = {
 }
  
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def cambiar_estado(request):
     """
     Body esperado:
@@ -220,42 +222,45 @@ def cambiar_estado(request):
     try:
         with transaction.atomic():
             detalles = pedido.detalles.select_related('producto').select_for_update()
- 
+
             for detalle in detalles:
                 prod     = detalle.producto
                 cantidad = detalle.cantidad
- 
-                # ── Lógica de stock según transición ──────────────────────
-                #
-                # Pendiente → cualquiera excepto Cancelado: stock ya reservado,
-                #   no se toca disponible de nuevo.
-                #
-                # * → Cancelado    : liberar reserva → suma a disponible
-                # * → Entregado    : confirmar entrega → quita de reservado
-                # * → Devolucion   : reponer stock → suma a disponible
-                # * → Devuelto     : reponer stock (flujo cliente)
-                # Los demás cambios de estado (P→En proceso, P→Enviado, etc.)
-                #   no modifican stock porque la reserva ya está hecha.
- 
+
                 if estado_nuevo == 'Cancelado':
-                    # Solo liberar si el pedido tenía stock reservado
                     if estado_anterior not in ('Cancelado', 'Entregado',
                                                'Devolucion', 'Devuelto'):
-                        _liberar_reserva(prod, cantidad)
- 
-                elif estado_nuevo in ('Entregado',):
-                    _confirmar_entrega(prod, cantidad)
- 
+                        registrar_cancelacion(
+                            producto   = prod,
+                            cantidad   = cantidad,
+                            pedido_ref = pedido.codigo,
+                            creado_por = 'Sistema',
+                        )
+
+                elif estado_nuevo == 'Entregado':
+                    registrar_venta(
+                        producto   = prod,
+                        cantidad   = cantidad,
+                        pedido_ref = pedido.codigo,
+                        creado_por = 'Sistema',
+                    )
+
                 elif estado_nuevo in ('Devolucion', 'Devuelto'):
-                    _reponer_stock(prod, cantidad)
- 
-                # Devolucion solicitada / Rechazado / En proceso / Enviado
+                    registrar_devolucion(
+                        producto   = prod,
+                        cantidad   = cantidad,
+                        pedido_ref = pedido.codigo,
+                        nota       = 'Devolución registrada',
+                        creado_por = 'Sistema',
+                    )
+
+                # En proceso / Enviado / Devolucion solicitada / Rechazado
                 # → no modifican stock
- 
+
             # Actualizar estado del pedido
             pedido.estado = estado_nuevo
             pedido.save()
- 
+
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
  

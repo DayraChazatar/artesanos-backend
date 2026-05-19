@@ -10,8 +10,6 @@ urlpatterns = [
     # Botón +Stock desde tabla de Productos
     path('reposicion/',      views.reposicion_stock,     name='inventario-reposicion'),
 
-    # Cambio de estado de pedido → dispara lógica automática de inventario
-    path('pedido/estado/',   views.cambiar_estado_pedido, name='pedido-estado'),
 
     # Tarjetas resumen
     path('resumen/',         views.resumen_inventario,   name='inventario-resumen'),
