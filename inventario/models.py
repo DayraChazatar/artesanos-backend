@@ -2,6 +2,7 @@
 from django.db import models
 
 from django.db import models
+
  
  
 ESTADO_CHOICES = [
