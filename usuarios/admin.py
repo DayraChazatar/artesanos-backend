@@ -1,10 +1,6 @@
 from django.contrib import admin
-from .models import Usuario, Categoria, Producto, Kardex
-
-@admin.register(Kardex)
-class KardexAdmin(admin.ModelAdmin):
-    list_display = ['producto', 'tipo', 'cantidad', 'fecha', 'nota']
-    list_filter = ['tipo', 'fecha']
+from .models import Notificacion
+from .models import Usuario, Categoria, Producto
 
 @admin.register(Producto)
 class ProductoAdmin(admin.ModelAdmin):
