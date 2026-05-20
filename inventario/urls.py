@@ -23,4 +23,5 @@ urlpatterns = [
  
     # Cambiar estado (usado por el artesano y por el cliente para cancelar)
     path('pedido/estado/',                    views.cambiar_estado,   name='cambiar_estado'),
-]
+] # inventario/urls.py
+path('usuario/<int:usuario_id>/password/', views.cambiar_password, name='cambiar_password'),

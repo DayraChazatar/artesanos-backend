@@ -477,3 +477,55 @@ def toggle_visibilidad(request, producto_id):
         return Response({'visible': producto.visible})
     except Producto.DoesNotExist:
         return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)    
+  
+   # ── Perfil artesano ───────────────────────────────────────────────────────────
+@api_view(['GET', 'PATCH'])
+@permission_classes([AllowAny])
+def perfil_artesano(request, usuario_id):
+    try:
+        usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
+    except Usuario.DoesNotExist:
+        return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = UsuarioSerializer(usuario, context={'request': request})
+        return Response(serializer.data)
+
+    if request.method == 'PATCH':
+        serializer = UsuarioSerializer(
+            usuario, data=request.data, partial=True,
+            context={'request': request}
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)   
+
+        # ── Cambiar contraseña ────────────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def cambiar_password(request, usuario_id):
+    try:
+        usuario = Usuario.objects.get(pk=usuario_id)
+    except Usuario.DoesNotExist:
+        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    password_actual    = request.data.get('password_actual')
+    password_nueva     = request.data.get('password_nueva')
+    password_confirmar = request.data.get('password_confirmar')
+
+    if not all([password_actual, password_nueva, password_confirmar]):
+        return Response({'error': 'Todos los campos son obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not check_password(password_actual, usuario.password):
+        return Response({'error': 'La contraseña actual es incorrecta'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if password_nueva != password_confirmar:
+        return Response({'error': 'Las contraseñas nuevas no coinciden'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(password_nueva) < 6:
+        return Response({'error': 'La contraseña debe tener al menos 6 caracteres'}, status=status.HTTP_400_BAD_REQUEST)
+
+    usuario.set_password(password_nueva)
+    usuario.save()
+    return Response({'ok': True, 'mensaje': 'Contraseña actualizada correctamente'})
