@@ -1,5 +1,5 @@
 # usuarios/views.py
-from rest_framework import viewsets
+from rest_framework import viewsets, status
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework.decorators import api_view, action, permission_classes
@@ -456,3 +456,24 @@ class NotificacionViewSet(viewsets.ModelViewSet):
     def no_leidas(self, request):
         count = Notificacion.objects.filter(leida=False).count()
         return Response({'count': count})
+
+    # ── Catálogo (solo productos visibles) ───────────────────────────────────────
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def catalogo(request):
+    productos = Producto.objects.filter(visible=True)
+    serializer = CatalogoProductoSerializer(productos, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+# ── Toggle visibilidad ────────────────────────────────────────────────────────
+@api_view(['PATCH'])
+@permission_classes([AllowAny])
+def toggle_visibilidad(request, producto_id):
+    try:
+        producto = Producto.objects.get(id=producto_id)
+        producto.visible = not producto.visible
+        producto.save()
+        return Response({'visible': producto.visible})
+    except Producto.DoesNotExist:
+        return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)    

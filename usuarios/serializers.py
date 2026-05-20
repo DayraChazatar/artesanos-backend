@@ -62,6 +62,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'cantidad_disponible',
             'imagen',
             'imagen_url',
+            'visible',
         ]
 
     def get_imagen_url(self, obj):

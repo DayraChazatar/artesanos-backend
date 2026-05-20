@@ -1,35 +1,34 @@
 from django.db import models
-from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
- 
- 
+
+
 class Usuario(models.Model):
     TIPO = (
         ('cliente', 'Cliente'),
         ('artesano', 'Artesano'),
     )
- 
+
     nombre = models.CharField(max_length=255)
     correo = models.EmailField(unique=True)
     password = models.CharField(max_length=255)
- 
+
     # Campos opcionales (solo para artesano)
     telefono = models.CharField(max_length=20, blank=True, null=True)
     especialidad = models.CharField(max_length=255, blank=True, null=True)
     biografia = models.TextField(blank=True, null=True)
- 
+
     tipo = models.CharField(max_length=10, choices=TIPO)
- 
+
     def __str__(self):
         return f"{self.nombre} ({self.tipo})"
- 
+
     def set_password(self, raw_password):
         self.password = make_password(raw_password)
- 
+
     def check_password(self, raw_password):
         return check_password(raw_password, self.password)
- 
- 
+
+
 class Categoria(models.Model):
     nombre = models.CharField(max_length=100)
     descripcion = models.TextField(blank=True, null=True)
@@ -39,9 +38,11 @@ class Categoria(models.Model):
         related_name='categorias',
         limit_choices_to={'tipo': 'artesano'}
     )
- 
+
     def __str__(self):
         return self.nombre
+
+
 class Producto(models.Model):
 
     IVA_OPCIONES = (
@@ -64,7 +65,6 @@ class Producto(models.Model):
     )
 
     # ── Identificación ───────────────────────────────────────────────────
-
     codigo_barra = models.CharField(
         max_length=50,
         unique=True,
@@ -81,7 +81,6 @@ class Producto(models.Model):
     )
 
     # ── Información básica ───────────────────────────────────────────────
-
     nombre = models.CharField(max_length=150)
 
     imagen = models.ImageField(
@@ -122,8 +121,10 @@ class Producto(models.Model):
         limit_choices_to={'tipo': 'artesano'}
     )
 
-    # ── Stock ────────────────────────────────────────────────────────────
+    # ── Visibilidad ──────────────────────────────────────────────────────
+    visible = models.BooleanField(default=True, verbose_name='Visible en catálogo')
 
+    # ── Stock ────────────────────────────────────────────────────────────
     cantidad = models.PositiveIntegerField(
         default=0,
         verbose_name='Stock actual'
@@ -140,7 +141,6 @@ class Producto(models.Model):
     )
 
     # ── Propiedades ──────────────────────────────────────────────────────
-
     @property
     def cantidad_disponible(self):
         return max(0, self.cantidad - self.cantidad_reservada)
@@ -151,43 +151,39 @@ class Producto(models.Model):
 
     @property
     def precio_final(self):
-    # Base: PVP si existe, sino precio_neto + IVA
         if self.precio_pvp:
-          base = float(self.precio_pvp)
+            base = float(self.precio_pvp)
         else:
             base = float(self.precio_neto) * (1 + self.iva / 100)
-
-    # Aplicar descuento sobre la base
         if self.descuento and self.valor_descuento > 0:
-           return base * (1 - self.valor_descuento / 100)
-
+            return base * (1 - self.valor_descuento / 100)
         return base
 
     @property
     def estado_stock(self):
         if self.cantidad <= self.stock_minimo:
             return 'bajo'
-
         if self.stock_maximo > 0 and self.cantidad >= self.stock_maximo:
             return 'maximo'
-
         return 'normal'
 
     def __str__(self):
         return self.nombre
+
+
 class Notificacion(models.Model):
     TIPOS = [
         ('pedido', 'Pedido'),
         ('stock', 'Stock'),
         ('sistema', 'Sistema'),
     ]
-    tipo        = models.CharField(max_length=20, choices=TIPOS)
-    titulo      = models.CharField(max_length=100)
-    detalle     = models.TextField()
-    leida       = models.BooleanField(default=False)
-    fecha       = models.DateTimeField(auto_now_add=True)
-    referencia_id = models.IntegerField(null=True, blank=True)  # ID del pedido o producto relacionado
-    ruta        = models.CharField(max_length=100, blank=True)  # ej: '/pedidos'
+    tipo          = models.CharField(max_length=20, choices=TIPOS)
+    titulo        = models.CharField(max_length=100)
+    detalle       = models.TextField()
+    leida         = models.BooleanField(default=False)
+    fecha         = models.DateTimeField(auto_now_add=True)
+    referencia_id = models.IntegerField(null=True, blank=True)
+    ruta          = models.CharField(max_length=100, blank=True)
 
     class Meta:
         ordering = ['-fecha']
