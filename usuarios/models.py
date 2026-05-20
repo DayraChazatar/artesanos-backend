@@ -1,34 +1,33 @@
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
- 
- 
+
+
 class Usuario(models.Model):
     TIPO = (
         ('cliente', 'Cliente'),
         ('artesano', 'Artesano'),
     )
- 
+
     nombre = models.CharField(max_length=255)
     correo = models.EmailField(unique=True)
     password = models.CharField(max_length=255)
- 
-    # Campos opcionales (solo para artesano)
+
     telefono = models.CharField(max_length=20, blank=True, null=True)
     especialidad = models.CharField(max_length=255, blank=True, null=True)
     biografia = models.TextField(blank=True, null=True)
- 
+
     tipo = models.CharField(max_length=10, choices=TIPO)
- 
+
     def __str__(self):
         return f"{self.nombre} ({self.tipo})"
- 
+
     def set_password(self, raw_password):
         self.password = make_password(raw_password)
- 
+
     def check_password(self, raw_password):
         return check_password(raw_password, self.password)
- 
- 
+
+
 class Categoria(models.Model):
     nombre = models.CharField(max_length=100)
     descripcion = models.TextField(blank=True, null=True)
@@ -38,18 +37,18 @@ class Categoria(models.Model):
         related_name='categorias',
         limit_choices_to={'tipo': 'artesano'}
     )
- 
+
     def __str__(self):
         return self.nombre
- 
- 
+
+
 class Producto(models.Model):
     IVA_OPCIONES = (
         (0,  '0% — Excluido'),
         (5,  '5%'),
         (19, '19%'),
     )
- 
+
     # ── Identificación ───────────────────────────────────────────────────────
     codigo_barra = models.CharField(
         max_length=50, unique=True, blank=True, null=True,
@@ -59,38 +58,44 @@ class Producto(models.Model):
         max_length=50, blank=True, null=True,
         verbose_name='Lote'
     )
- 
+
     # ── Información básica ───────────────────────────────────────────────────
-    nombre      = models.CharField(max_length=150)
-    categoria   = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='productos')
-    precio_neto = models.DecimalField(max_digits=12, decimal_places=2)
-    iva         = models.IntegerField(choices=IVA_OPCIONES, default=0)
-    descuento   = models.BooleanField(default=False)
+    nombre          = models.CharField(max_length=150)
+    categoria       = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name='productos')
+    precio_neto     = models.DecimalField(max_digits=12, decimal_places=2)
+    precio_pvp      = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    iva             = models.IntegerField(choices=IVA_OPCIONES, default=0)
+    descuento       = models.BooleanField(default=False)
     valor_descuento = models.PositiveIntegerField(default=0, verbose_name='Descuento (%)')
-    artesano    = models.ForeignKey(
+    artesano        = models.ForeignKey(
         Usuario,
         on_delete=models.CASCADE,
         related_name='productos',
         limit_choices_to={'tipo': 'artesano'}
     )
- 
+    imagen          = models.ImageField(upload_to='productos/', blank=True, null=True)
+
+    # ── Visibilidad ──────────────────────────────────────────────────────────
+    visible = models.BooleanField(default=True, verbose_name='Visible en catálogo')
+
     # ── Stock ────────────────────────────────────────────────────────────────
-    cantidad     = models.PositiveIntegerField(default=0, verbose_name='Stock actual')
-    stock_minimo = models.PositiveIntegerField(default=0, verbose_name='Stock mínimo')
-    stock_maximo = models.PositiveIntegerField(default=0, verbose_name='Stock máximo')
- 
+    cantidad           = models.PositiveIntegerField(default=0, verbose_name='Stock actual')
+    cantidad_reservada = models.IntegerField(default=0)
+    stock_minimo       = models.PositiveIntegerField(default=0, verbose_name='Stock mínimo')
+    stock_maximo       = models.PositiveIntegerField(default=0, verbose_name='Stock máximo')
+
     # ── Propiedades calculadas ───────────────────────────────────────────────
     @property
     def precio_con_iva(self):
         return float(self.precio_neto) * (1 + self.iva / 100)
- 
+
     @property
     def precio_final(self):
         precio = self.precio_con_iva
         if self.descuento and self.valor_descuento > 0:
-         return precio * (1 - self.valor_descuento / 100)
+            return precio * (1 - self.valor_descuento / 100)
         return precio
- 
+
     @property
     def estado_stock(self):
         if self.cantidad <= self.stock_minimo:
@@ -98,31 +103,35 @@ class Producto(models.Model):
         if self.stock_maximo > 0 and self.cantidad >= self.stock_maximo:
             return 'maximo'
         return 'normal'
- 
+
+    @property
+    def cantidad_disponible(self):
+        return self.cantidad - self.cantidad_reservada
+
     def __str__(self):
         return self.nombre
- 
- 
+
+
 class Kardex(models.Model):
     TIPO_MOVIMIENTO = (
         ('Entrada', 'Entrada'),
         ('Salida',  'Salida'),
     )
- 
+
     producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name='kardex')
     tipo     = models.CharField(max_length=10, choices=TIPO_MOVIMIENTO)
     cantidad = models.PositiveIntegerField()
     fecha    = models.DateField()
     nota     = models.TextField(blank=True, null=True)
- 
+
     def save(self, *args, **kwargs):
-        if self.pk is None:  # solo en creación
+        if self.pk is None:
             if self.tipo == 'Entrada':
                 self.producto.cantidad += self.cantidad
             elif self.tipo == 'Salida':
                 self.producto.cantidad = max(0, self.producto.cantidad - self.cantidad)
             self.producto.save()
         super().save(*args, **kwargs)
- 
+
     def __str__(self):
         return f"{self.tipo} — {self.producto.nombre} ({self.cantidad})"
