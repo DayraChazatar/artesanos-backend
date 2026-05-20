@@ -6,10 +6,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.db import transaction
-from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view
-
-
 
 from usuarios.models import Producto
 from usuarios.models import Usuario
@@ -31,7 +28,6 @@ from .services import (
     registrar_cancelacion,
     registrar_devolucion,
 )
-from usuarios.models import Producto
 
 # ─── Helpers de stock ─────────────────────────────────────────────────────────
  
@@ -45,42 +41,24 @@ def _reservar_stock(producto: Producto, cantidad: int):
     producto.cantidad_reservada = getattr(producto, 'cantidad_reservada', 0) + cantidad
     producto.save(update_fields=['cantidad_reservada'])
  
- 
 def _liberar_reserva(producto: Producto, cantidad: int):
-    """Cancela la reserva: devuelve al disponible."""
     producto.cantidad           += cantidad
     producto.cantidad_reservada  = max(0, getattr(producto, 'cantidad_reservada', 0) - cantidad)
     producto.save()
  
- 
 def _confirmar_entrega(producto: Producto, cantidad: int):
-    """Entregado: solo descuenta de reservado (ya estaba fuera del disponible)."""
     producto.cantidad_reservada = max(0, getattr(producto, 'cantidad_reservada', 0) - cantidad)
     producto.save()
  
- 
 def _reponer_stock(producto: Producto, cantidad: int):
-    """Devolución: reingresa al stock disponible."""
     producto.cantidad += cantidad
     producto.save()
- 
  
 # ─── 1. Crear pedido ──────────────────────────────────────────────────────────
  
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def crear_pedido(request):
-    """
-    Body esperado:
-    {
-      "cliente_id": 5,
-      "items": [
-        { "producto_id": 12, "cantidad": 2, "precio": 45000 },
-        { "producto_id": 7,  "cantidad": 1, "precio": 80000 }
-      ],
-      "direccion": "Calle 10 #4-20, Pasto",
-      "telefono":  "3001234567"
-    }
-    """
     ser = CrearPedidoSerializer(data=request.data)
     if not ser.is_valid():
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -98,7 +76,6 @@ def crear_pedido(request):
  
     try:
         with transaction.atomic():
-            # Obtener productos y validar stock antes de crear nada
             productos_map: dict[int, Producto] = {}
             for item in items:
                 pid = item['producto_id']
@@ -108,14 +85,11 @@ def crear_pedido(request):
                     raise ValueError(f'Producto {pid} no encontrado.')
                 productos_map[pid] = prod
  
-            # Determinar artesano desde el primer producto
             primer_prod  = productos_map[items[0]['producto_id']]
             artesano_obj = getattr(primer_prod, 'artesano', None)
  
-            # Calcular total
             total = sum(item['precio'] * item['cantidad'] for item in items)
  
-            # Crear cabecera del pedido
             pedido = Pedido.objects.create(
                 cliente   = cliente,
                 artesano  = artesano_obj,
@@ -125,7 +99,6 @@ def crear_pedido(request):
                 telefono  = data.get('telefono', ''),
             )
  
-            # Crear detalles + reservar stock
             for item in items:
                 prod = productos_map[item['producto_id']]
                 _reservar_stock(prod, item['cantidad'])
@@ -144,28 +117,24 @@ def crear_pedido(request):
         status=status.HTTP_201_CREATED,
     )
  
- 
 # ─── 2. Listar pedidos por cliente ───────────────────────────────────────────
  
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def pedidos_cliente(request, cliente_id):
-    """GET /api/inventario/pedidos/cliente/<cliente_id>/"""
     pedidos = Pedido.objects.filter(cliente_id=cliente_id).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
- 
  
 # ─── 3. Listar pedidos por artesano ──────────────────────────────────────────
  
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def pedidos_artesano(request, artesano_id):
-    """GET /api/inventario/pedidos/artesano/<artesano_id>/"""
     pedidos = Pedido.objects.filter(artesano_id=artesano_id).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
  
- 
-# ─── 4. Cambiar estado con lógica automática de stock ────────────────────────
- 
-# Transiciones válidas desde cada estado
+# ─── 4. Cambiar estado ────────────────────────────────────────────────────────
+
 TRANSICIONES_VALIDAS: dict[str, list[str]] = {
     'Pendiente':             ['En proceso', 'Enviado', 'Cancelado'],
     'En proceso':            ['Enviado', 'Cancelado'],
@@ -181,23 +150,12 @@ TRANSICIONES_VALIDAS: dict[str, list[str]] = {
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def cambiar_estado(request):
-    """
-    Body esperado:
-    {
-      "pedido_id": 42,          ← o bien →
-      "pedido_ref": "PED-00042",
-      "estado_nuevo": "Enviado",
-      "admin_response": "",     (opcional, para respuestas de devolución)
-      "admin_photos": []        (opcional)
-    }
-    """
     ser = CambiarEstadoSerializer(data=request.data)
     if not ser.is_valid():
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
  
     data = ser.validated_data
  
-    # Resolver pedido por id o por código
     if data.get('pedido_id'):
         pedido = get_object_or_404(Pedido, pk=data['pedido_id'])
     elif data.get('pedido_ref'):
@@ -254,36 +212,32 @@ def cambiar_estado(request):
                         creado_por = 'Sistema',
                     )
 
-                # En proceso / Enviado / Devolucion solicitada / Rechazado
-                # → no modifican stock
-
-            # Actualizar estado del pedido
             pedido.estado = estado_nuevo
             pedido.save()
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
  
-    # Stock del primer producto para que el frontend pueda actualizarlo en vivo
     primer_detalle  = pedido.detalles.select_related('producto').first()
     stock_actual    = getattr(primer_detalle.producto, 'cantidad', None) if primer_detalle else None
     stock_reservado = getattr(primer_detalle.producto, 'cantidad_reservada', None) if primer_detalle else None
  
     return Response({
-        'ok':             True,
-        'pedido_id':      pedido.pk,
-        'codigo':         pedido.codigo,
+        'ok':              True,
+        'pedido_id':       pedido.pk,
+        'codigo':          pedido.codigo,
         'estado_anterior': estado_anterior,
-        'estado_nuevo':   estado_nuevo,
-        'stock_actual':   stock_actual,
+        'estado_nuevo':    estado_nuevo,
+        'stock_actual':    stock_actual,
         'stock_reservado': stock_reservado,
     })
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /api/inventario/kardex/
 # ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def lista_kardex(request):
     qs = Kardex.objects.select_related('producto').all()
 
@@ -308,19 +262,17 @@ def lista_kardex(request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /api/inventario/kardex/
-# Entrada manual desde el formulario de Inventario
-# Body: { producto, cantidad, fecha, nota, precio_pvp (opcional) }
+# POST /api/inventario/kardex/nuevo/
 # ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def crear_kardex(request):
     producto_id  = request.data.get('producto')
     cantidad_raw = request.data.get('cantidad')
     fecha        = request.data.get('fecha')
     nota         = request.data.get('nota', '')
-    precio_pvp   = request.data.get('precio_pvp')   # ← NUEVO campo
+    precio_pvp   = request.data.get('precio_pvp')
 
     if not producto_id or cantidad_raw is None or not fecha:
         return Response(
@@ -342,7 +294,6 @@ def crear_kardex(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Convertir precio_pvp si viene
     if precio_pvp is not None:
         try:
             precio_pvp = float(precio_pvp)
@@ -355,16 +306,16 @@ def crear_kardex(request):
             )
 
     producto   = get_object_or_404(Producto, pk=producto_id)
-    creado_por = request.user.get_full_name() or request.user.username
+    creado_por = 'Sistema'
 
     try:
         movimiento = registrar_ajuste_manual(
-            producto    = producto,
-            cantidad_raw= cantidad_raw,
-            nota        = nota,
-            fecha       = fecha,
-            creado_por  = creado_por,
-            precio_pvp  = precio_pvp,   # ← NUEVO
+            producto     = producto,
+            cantidad_raw = cantidad_raw,
+            nota         = nota,
+            fecha        = fecha,
+            creado_por   = creado_por,
+            precio_pvp   = precio_pvp,
         )
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -374,11 +325,10 @@ def crear_kardex(request):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /api/inventario/reposicion/
-# Botón +Stock desde tabla de Productos
 # ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def reposicion_stock(request):
     producto_id = request.data.get('producto')
     cantidad    = request.data.get('cantidad')
@@ -401,7 +351,7 @@ def reposicion_stock(request):
         )
 
     producto   = get_object_or_404(Producto, pk=producto_id)
-    creado_por = request.user.get_full_name() or request.user.username
+    creado_por = 'Sistema'
 
     try:
         movimiento = registrar_reposicion(
@@ -423,127 +373,18 @@ def reposicion_stock(request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /api/inventario/pedido/estado/
-# Cambia el estado de un pedido y ejecuta la lógica de inventario automática
-#
-# Body: {
-#   "pedido_ref": "PED-0001",
-#   "producto_id": 1,
-#   "cantidad": 2,
-#   "estado_anterior": "Pendiente",
-#   "estado_nuevo": "Entregado",
-#   "nota": ""          (opcional)
-# }
-#
-# Transiciones soportadas:
-#   (nuevo)      → Pendiente  : reserva
-#   Pendiente    → Entregado  : venta (resta stock real, libera reserva)
-#   Pendiente    → Cancelado  : cancelacion (libera reserva)
-#   Entregado    → Devolucion : devolucion (suma al stock)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def cambiar_estado_pedido(request):
-    pedido_ref      = request.data.get('pedido_ref')
-    producto_id     = request.data.get('producto_id')
-    cantidad        = request.data.get('cantidad')
-    estado_anterior = request.data.get('estado_anterior', '')
-    estado_nuevo    = request.data.get('estado_nuevo')
-    nota            = request.data.get('nota', '')
-
-    if not all([pedido_ref, producto_id, cantidad, estado_nuevo]):
-        return Response(
-            {'error': 'pedido_ref, producto_id, cantidad y estado_nuevo son obligatorios.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    try:
-        cantidad = int(cantidad)
-        if cantidad <= 0:
-            raise ValueError()
-    except (TypeError, ValueError):
-        return Response(
-            {'error': 'La cantidad debe ser un entero mayor a 0.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    producto   = get_object_or_404(Producto, pk=producto_id)
-    creado_por = request.user.get_full_name() or request.user.username
-
-    movimiento = None
-
-    try:
-        # ── Crear pedido → Pendiente (reserva) ──────────────────────────
-        if estado_nuevo == 'Pendiente' and estado_anterior in ('', None):
-            movimiento = registrar_reserva(
-                producto   = producto,
-                cantidad   = cantidad,
-                pedido_ref = pedido_ref,
-                creado_por = creado_por,
-            )
-
-        # ── Pendiente → Entregado (venta real) ──────────────────────────
-        elif estado_anterior == 'Pendiente' and estado_nuevo == 'Entregado':
-            movimiento = registrar_venta(
-                producto   = producto,
-                cantidad   = cantidad,
-                pedido_ref = pedido_ref,
-                creado_por = creado_por,
-            )
-
-        # ── Pendiente → Cancelado (liberar reserva) ─────────────────────
-        elif estado_anterior == 'Pendiente' and estado_nuevo == 'Cancelado':
-            movimiento = registrar_cancelacion(
-                producto   = producto,
-                cantidad   = cantidad,
-                pedido_ref = pedido_ref,
-                creado_por = creado_por,
-            )
-
-        # ── Entregado → Devolucion ───────────────────────────────────────
-        elif estado_anterior == 'Entregado' and estado_nuevo == 'Devolucion':
-            movimiento = registrar_devolucion(
-                producto   = producto,
-                cantidad   = cantidad,
-                pedido_ref = pedido_ref,
-                nota       = nota,
-                creado_por = creado_por,
-            )
-
-        else:
-            # Transición no relevante para inventario (ej: Enviado)
-            return Response({
-                'mensaje': f'Transición {estado_anterior} → {estado_nuevo} no afecta el inventario.',
-                'stock_actual':      producto.cantidad,
-                'stock_reservado':   producto.cantidad_reservada,
-                'stock_disponible':  producto.cantidad - producto.cantidad_reservada,
-            })
-
-    except ValueError as e:
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({
-        'movimiento':       KardexSerializer(movimiento).data,
-        'stock_actual':     producto.cantidad,
-        'stock_reservado':  producto.cantidad_reservada,
-        'stock_disponible': producto.cantidad - producto.cantidad_reservada,
-    }, status=status.HTTP_200_OK)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # GET /api/inventario/resumen/
 # ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def resumen_inventario(request):
     kardex = Kardex.objects.all()
 
     total_entradas = sum(
         k.cantidad for k in kardex
         if k.tipo in ('Entrada', 'Devolucion')
-        and k.subtipo not in ('cancelacion',)   # cancelacion no es entrada real
+        and k.subtipo not in ('cancelacion',)
     )
     total_salidas = sum(
         k.cantidad for k in kardex
@@ -563,3 +404,55 @@ def resumen_inventario(request):
         'total_movimientos': kardex.count(),
         'valor_movido':      float(valor_movido),
     })
+   # ── Perfil artesano ───────────────────────────────────────────────────────────
+@api_view(['GET', 'PATCH'])
+@permission_classes([AllowAny])
+def perfil_artesano(request, usuario_id):
+    try:
+        usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
+    except Usuario.DoesNotExist:
+        return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = UsuarioSerializer(usuario, context={'request': request})
+        return Response(serializer.data)
+
+    if request.method == 'PATCH':
+        serializer = UsuarioSerializer(
+            usuario, data=request.data, partial=True,
+            context={'request': request}
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ── Cambiar contraseña ────────────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def cambiar_password(request, usuario_id):
+    try:
+        usuario = Usuario.objects.get(pk=usuario_id)
+    except Usuario.DoesNotExist:
+        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    password_actual    = request.data.get('password_actual')
+    password_nueva     = request.data.get('password_nueva')
+    password_confirmar = request.data.get('password_confirmar')
+
+    if not all([password_actual, password_nueva, password_confirmar]):
+        return Response({'error': 'Todos los campos son obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not check_password(password_actual, usuario.password):
+        return Response({'error': 'La contraseña actual es incorrecta'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if password_nueva != password_confirmar:
+        return Response({'error': 'Las contraseñas nuevas no coinciden'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(password_nueva) < 6:
+        return Response({'error': 'La contraseña debe tener al menos 6 caracteres'}, status=status.HTTP_400_BAD_REQUEST)
+
+    usuario.set_password(password_nueva)
+    usuario.save()
+    return Response({'ok': True, 'mensaje': 'Contraseña actualizada correctamente'}) 

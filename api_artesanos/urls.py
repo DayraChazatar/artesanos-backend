@@ -14,6 +14,8 @@ from usuarios.views import (
     login,  # ← agrega NotificacionViewSet
     catalogo_productos,
     toggle_visibilidad,
+    perfil_artesano,
+    cambiar_password, 
 
     reporte_productos_excel, reporte_productos_pdf,
     reporte_inventario_excel, reporte_inventario_pdf,
@@ -46,6 +48,8 @@ urlpatterns = [
     path('api/reportes/kardex/pdf/', reporte_kardex_pdf),
     path('api/reportes/contable/excel/', reporte_contable_excel),
     path('api/reportes/contable/pdf/', reporte_contable_pdf),
+    path('api/perfil/artesano/<int:usuario_id>/', perfil_artesano),
+    path('api/perfil/cambiar-password/<int:usuario_id>/', cambiar_password),
 ]
 
 urlpatterns += static(

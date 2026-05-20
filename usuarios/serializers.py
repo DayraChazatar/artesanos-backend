@@ -6,9 +6,17 @@ from inventario.models import Kardex
 
 
 class UsuarioSerializer(serializers.ModelSerializer):
+    foto_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Usuario
         fields = '__all__'
+
+    def get_foto_url(self, obj):
+        request = self.context.get('request')
+        if obj.foto and request:
+            return request.build_absolute_uri(obj.foto.url)
+        return ''
 
     def create(self, validated_data):
         validated_data['password'] = make_password(validated_data['password'])
