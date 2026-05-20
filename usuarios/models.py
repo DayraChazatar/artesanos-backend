@@ -16,7 +16,7 @@ class Usuario(models.Model):
     telefono = models.CharField(max_length=20, blank=True, null=True)
     especialidad = models.CharField(max_length=255, blank=True, null=True)
     biografia = models.TextField(blank=True, null=True)
-
+    foto = models.ImageField(upload_to='perfiles/', blank=True, null=True)
     tipo = models.CharField(max_length=10, choices=TIPO)
 
     def __str__(self):
