@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
-
+   
 
 class Usuario(models.Model):
     TIPO = (
@@ -31,14 +31,20 @@ class Usuario(models.Model):
 
 
 class Categoria(models.Model):
-    nombre = models.CharField(max_length=100)
+    nombre      = models.CharField(max_length=100)
     descripcion = models.TextField(blank=True, null=True)
     artesano = models.ForeignKey(
         Usuario,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='categorias',
         limit_choices_to={'tipo': 'artesano'}
     )
+
+    def __str__(self):
+        return self.nombre
+    
 
     def __str__(self):
         return self.nombre
@@ -89,15 +95,15 @@ class Producto(models.Model):
         null=True,
         blank=True
     )
-
+    
     categoria = models.ForeignKey(
-        Categoria,
+        'Categoria',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='productos'
     )
-
+    
     precio_neto = models.DecimalField(
         max_digits=12,
         decimal_places=2
@@ -142,6 +148,13 @@ class Producto(models.Model):
     )
 
     # ── Propiedades ──────────────────────────────────────────────────────
+    #@property
+    #def categoria(self):
+       # """La categoría siempre viene del artesano."""
+       # return self.artesano.categoria
+
+    def __str__(self):
+        return f"{self.nombre} ({self.artesano.categoria})"
     @property
     def cantidad_disponible(self):
         return max(0, self.cantidad - self.cantidad_reservada)

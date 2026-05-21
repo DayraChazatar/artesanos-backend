@@ -7,7 +7,6 @@ from django.utils.timezone import now
 # ─────────────────────────────────────────────────────────────
 # ESTADOS DEL PEDIDO
 # ─────────────────────────────────────────────────────────────
-
 ESTADO_CHOICES = [
     ('Pendiente', 'Pendiente'),
     ('En proceso', 'En proceso'),

@@ -23,6 +23,7 @@ from inventario.models import Kardex
 # ── Imports de serializers ────────────────────────────────────────────────────
 from .serializers import (
     UsuarioSerializer,
+    RegistroArtesanoSerializer,
     CategoriaSerializer,
     ProductoSerializer,
     CatalogoProductoSerializer,
@@ -41,8 +42,6 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         qs = Usuario.objects.filter(tipo='artesano')
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login(request):
@@ -67,25 +66,59 @@ def login(request):
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
 
 
+@api_view(['PATCH'])
+@permission_classes([AllowAny])
+def toggle_visibilidad(request, producto_id):
+    try:
+        producto = Producto.objects.get(id=producto_id)
+        producto.visible = not producto.visible
+        producto.save(update_fields=['visible'])  # ← solo guarda ese campo
+        return Response({'visible': producto.visible})
+    except Producto.DoesNotExist:
+        return Response(
+            {'error': 'Producto no encontrado'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def registro_artesano(request):
+    """
+    Registra un nuevo artesano asignándole automáticamente
+    la categoría que seleccionó (categoria_id).
+    """
+    serializer = RegistroArtesanoSerializer(data=request.data)
+    if serializer.is_valid():
+        artesano = serializer.save()
+        return Response({
+            'id':     artesano.id,
+            'nombre': artesano.nombre,
+            'tipo':   artesano.tipo,
+        }, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 # ── Categorías ────────────────────────────────────────────────────────────────
 class CategoriaViewSet(viewsets.ModelViewSet):
-    queryset = Categoria.objects.all()
-    serializer_class = CategoriaSerializer
+    queryset           = Categoria.objects.all()
+    serializer_class   = CategoriaSerializer
     permission_classes = [AllowAny]
 
-    def create(self, request, *args, **kwargs):
-        print("DATA RECIBIDA:", request.data)
-        ser = CategoriaSerializer(data=request.data)
-        ser.is_valid()
-        print("ERRORES:", ser.errors)
-        return super().create(request, *args, **kwargs)
-
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs          = super().get_queryset()
         artesano_id = self.request.query_params.get('artesano')
+        solo_libres = self.request.query_params.get('disponibles')
         if artesano_id:
-            qs = qs.filter(artesano_id=artesano_id)
+              qs = qs.filter(artesano_id=artesano_id)
+        if solo_libres:
+              qs = qs.filter(artesano__isnull=True)
         return qs
+
+    def create(self, request, *args, **kwargs):
+        """
+        El admin crea categorías libres (sin artesano).
+        El artesano se asigna al registrarse.
+        """
+        return super().create(request, *args, **kwargs)
 
 
 # ── Productos ─────────────────────────────────────────────────────────────────
@@ -99,11 +132,18 @@ class ProductoViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
-    def create(self, request, *args, **kwargs):
-        print("🔥 ENTRO AL CREATE")
-        print("DATA:", request.data)
-        print("FILES:", request.FILES)
-        return super().create(request, *args, **kwargs)
+    def perform_create(self, serializer):
+        """Asigna la categoría automáticamente desde el artesano."""
+        artesano_id = self.request.data.get('artesano')
+        if artesano_id:
+            try:
+                artesano = Usuario.objects.get(pk=artesano_id, tipo='artesano')
+                categoria = Categoria.objects.filter(artesano=artesano).first()
+                serializer.save(categoria=categoria)
+                return
+            except Usuario.DoesNotExist:
+                pass
+        serializer.save()
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -112,11 +152,31 @@ class ProductoViewSet(viewsets.ModelViewSet):
             qs = qs.filter(artesano_id=artesano_id)
         return qs
 
-
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def asignar_categoria_productos(request):
+    """
+    Asigna automáticamente la categoría del artesano
+    a todos sus productos que no tienen categoría.
+    """
+    artesanos = Usuario.objects.filter(tipo='artesano')
+    actualizados = 0
+    for artesano in artesanos:
+        categoria = Categoria.objects.filter(artesano=artesano).first()
+        if categoria:
+            actualizados += Producto.objects.filter(
+                artesano=artesano,
+                categoria__isnull=True
+            ).update(categoria=categoria)
+    return Response({
+        'ok': True,
+        'productos_actualizados': actualizados
+    })
+    
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo_productos(request):
-    productos = Producto.objects.filter(cantidad__gt=0)
+    productos = Producto.objects.filter(visible=True)
     serializer = CatalogoProductoSerializer(
         productos, many=True, context={'request': request}
     )
