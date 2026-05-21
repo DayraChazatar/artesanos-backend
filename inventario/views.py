@@ -2,6 +2,7 @@
 
 from datetime import date
 import uuid
+from .models import Pedido, DetallePedido, Kardex, Devolucion
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -258,13 +259,40 @@ def cambiar_estado(request):
             # Actualizar estado
             pedido.estado = estado_nuevo
 
-            # Generar guía automáticamente al marcar como Enviado
+            # Guardar devolución cuando el cliente la solicita
+            if estado_nuevo == 'Devolucion solicitada':
+                motivo = data.get('admin_response', '')
+                Devolucion.objects.update_or_create(
+                    pedido=pedido,
+                    defaults={
+                        'motivo': motivo,
+                        'estado': 'Pendiente',
+                    }
+                )
+
+# Actualizar devolución cuando el artesano responde
+            if estado_nuevo == 'Devolucion aprobada':
+                Devolucion.objects.filter(pedido=pedido).update(
+                    estado='Aprobada',
+                    respuesta_artesano=data.get('admin_response', ''),
+                    fecha_respuesta=date.today(),
+                )
+
+            if estado_nuevo == 'Devolucion rechazada':
+                Devolucion.objects.filter(pedido=pedido).update(
+                    estado='Rechazada',
+                    respuesta_artesano=data.get('admin_response', ''),
+                    fecha_respuesta=date.today(),
+                )
+
             if estado_nuevo == 'Enviado' and not pedido.numero_guia:
                 pedido.numero_guia    = f'PKR-{pedido.codigo}-{uuid.uuid4().hex[:6].upper()}'
                 pedido.transportadora = 'Coordinadora'
                 pedido.fecha_envio    = date.today()
 
             pedido.save()
+            pedido.refresh_from_db()
+            print(f">>> GUIA: {pedido.numero_guia}")
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -285,7 +313,6 @@ def cambiar_estado(request):
         'stock_actual':    stock_actual,
         'stock_reservado': stock_reservado,
     })
-
 
 # ─────────────────────────────────────────────────────────────
 # KARDEX — LISTAR

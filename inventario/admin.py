@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Pedido, DetallePedido, Kardex
+from .models import Pedido, DetallePedido, Kardex, Devolucion
 
 @admin.register(Pedido)
 class PedidoAdmin(admin.ModelAdmin):
@@ -18,3 +18,9 @@ class KardexAdmin(admin.ModelAdmin):
     list_filter = ['tipo', 'subtipo', 'origen']
     search_fields = ['producto__nombre', 'pedido_ref']
     ordering = ['-creado_en']
+@admin.register(Devolucion)
+class DevolucionAdmin(admin.ModelAdmin):
+    list_display = ['pedido', 'estado', 'motivo', 'fecha_solicitud', 'fecha_respuesta']
+    list_filter = ['estado']
+    search_fields = ['pedido__codigo']
+    ordering = ['-fecha_solicitud']
