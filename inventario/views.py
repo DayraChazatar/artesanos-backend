@@ -13,19 +13,16 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
+from usuarios.serializers import UsuarioSerializer
 
 from .models import Pedido, DetallePedido, Kardex
 
-
 from .serializers import (
-    KardexSerializer,
     PedidoSerializer,
-    DetallePedidoSerializer,
     CrearPedidoSerializer,
     CambiarEstadoSerializer,
+    KardexSerializer,
 )
-
-from usuarios.serializers import UsuarioSerializer 
 
 from .services import (
     registrar_ajuste_manual,
@@ -304,12 +301,14 @@ def lista_kardex(request):
     producto_id = request.query_params.get('producto')
     tipo        = request.query_params.get('tipo')
     origen      = request.query_params.get('origen')
+    artesano_id = request.query_params.get('artesano')  # ← NUEVO
 
     if desde:       qs = qs.filter(fecha__gte=desde)
     if hasta:       qs = qs.filter(fecha__lte=hasta)
     if producto_id: qs = qs.filter(producto_id=producto_id)
     if tipo:        qs = qs.filter(tipo=tipo)
     if origen:      qs = qs.filter(origen=origen)
+    if artesano_id: qs = qs.filter(producto__artesano_id=artesano_id)  # ← NUEVO
 
     return Response(KardexSerializer(qs, many=True).data)
 

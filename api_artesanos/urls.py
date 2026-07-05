@@ -50,6 +50,7 @@ urlpatterns = [
     path('api/reportes/contable/pdf/',                       reporte_contable_pdf),
     path('api/perfil/artesano/<int:usuario_id>/',            perfil_artesano),
     path('api/perfil/cambiar-password/<int:usuario_id>/',    cambiar_password),
+    path('api/productos/<int:producto_id>/visibilidad/', toggle_visibilidad),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

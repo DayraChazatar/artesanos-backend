@@ -106,6 +106,7 @@ class ProductoSerializer(serializers.ModelSerializer):
     cantidad_disponible = serializers.IntegerField(read_only=True)
     artesano_nombre     = serializers.CharField(source='artesano.nombre', read_only=True)
     imagen_url          = serializers.SerializerMethodField()
+    visible = serializers.BooleanField(required=False)
 
     class Meta:
         model  = Producto
