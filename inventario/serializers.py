@@ -1,7 +1,14 @@
 # inventario/serializers.py
 from rest_framework import serializers
-from .models import Kardex, Pedido, DetallePedido
+from .models import Kardex, Pedido, DetallePedido, Devolucion
 
+class DevolucionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Devolucion
+        fields = [
+            'motivo', 'respuesta_artesano',
+            'estado', 'fecha_solicitud', 'fecha_respuesta',
+        ]
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
@@ -25,6 +32,7 @@ class PedidoSerializer(serializers.ModelSerializer):
     detalles        = DetallePedidoSerializer(many=True, read_only=True)
     cliente_nombre  = serializers.SerializerMethodField()
     artesano_nombre = serializers.CharField(source='artesano.nombre', read_only=True, default='')
+    devolucion      = DevolucionSerializer(read_only=True)  # ← agregar
 
     def get_cliente_nombre(self, obj):
         nombre = getattr(obj.cliente, 'nombre', '') or ''
@@ -40,6 +48,7 @@ class PedidoSerializer(serializers.ModelSerializer):
             'fecha', 'updated', 'detalles',
             'numero_guia', 'transportadora',
             'fecha_envio', 'fecha_entrega',
+            'devolucion',
         ]
         read_only_fields = ['id', 'codigo', 'fecha', 'updated']
 
