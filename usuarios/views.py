@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from django.contrib.auth.hashers import check_password
+from django.contrib.auth.hashers import check_password, make_password
 from django.db.models import Sum
 import io
 from django.http import HttpResponse
@@ -67,6 +67,44 @@ def login(request):
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def registro_artesano(request):
+    """Registro de nuevo artesano con categoria_id."""
+    data = request.data.copy()
+    password = data.get('password')
+    categoria_id = data.get('categoria_id')
+
+    if not password:
+        return Response({'error': 'La contraseña es obligatoria'}, status=status.HTTP_400_BAD_REQUEST)
+    if not categoria_id:
+        return Response({'error': 'Debes seleccionar una categoría'}, status=status.HTTP_400_BAD_REQUEST)
+    if Usuario.objects.filter(correo=data.get('correo')).exists():
+        return Response({'error': 'Ya existe un usuario con ese correo'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        categoria = Categoria.objects.get(pk=categoria_id)
+    except Categoria.DoesNotExist:
+        return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
+
+    data['tipo'] = 'artesano'
+    data['password'] = make_password(password)
+
+    serializer = UsuarioSerializer(data=data)
+    if serializer.is_valid():
+        usuario = serializer.save()
+        # Asignar la categoría al artesano recién creado
+        categoria.artesano = usuario
+        categoria.save()
+        return Response({
+            'success': True,
+            'id':      usuario.id,
+            'nombre':  usuario.nombre,
+            'tipo':    usuario.tipo,
+        }, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 # ── Categorías ────────────────────────────────────────────────────────────────
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
@@ -123,6 +161,27 @@ def catalogo_productos(request):
     return Response(serializer.data)
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def asignar_categoria_productos(request):
+    """Asigna una categoría a una lista de productos."""
+    categoria_id = request.data.get('categoria_id')
+    producto_ids = request.data.get('producto_ids', [])
+
+    if not categoria_id:
+        return Response({'error': 'categoria_id es obligatorio'}, status=status.HTTP_400_BAD_REQUEST)
+    if not producto_ids:
+        return Response({'error': 'producto_ids no puede estar vacío'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        categoria = Categoria.objects.get(pk=categoria_id)
+    except Categoria.DoesNotExist:
+        return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    actualizados = Producto.objects.filter(pk__in=producto_ids).update(categoria=categoria)
+    return Response({'ok': True, 'actualizados': actualizados})
+
+
 # ── Helper notificaciones ─────────────────────────────────────────────────────
 def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
     Notificacion.objects.create(
@@ -143,8 +202,11 @@ class KardexViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         producto_id = self.request.query_params.get('producto')
+        artesano_id = self.request.query_params.get('artesano')
         if producto_id:
             qs = qs.filter(producto_id=producto_id)
+        if artesano_id:
+            qs = qs.filter(producto__artesano_id=artesano_id)
         return qs
 
     def perform_create(self, serializer):
@@ -268,7 +330,6 @@ def reporte_inventario_excel(request):
     productos = Producto.objects.filter(artesano_id=artesano_id) if artesano_id else Producto.objects.all()
     wb = Workbook()
 
-    # Hoja 1: stock por producto
     ws = wb.active
     ws.title = 'Stock'
     headers = ['Producto', 'Código', 'Stock actual', 'Stock mínimo', 'Stock máximo', 'Estado']
@@ -278,7 +339,6 @@ def reporte_inventario_excel(request):
         ws.append([p.nombre, p.codigo_barra or '—', p.cantidad, p.stock_minimo, p.stock_maximo, p.estado_stock])
     estilo_excel(ws, headers)
 
-    # Hoja 2: movimientos (kardex)
     ws2 = wb.create_sheet(title='Movimientos')
     headers2 = ['Producto', 'Tipo', 'Subtipo', 'Cantidad', 'Stock result.', 'Origen', 'Pedido', 'Fecha', 'Nota']
     for col, h in enumerate(headers2, 1):
@@ -310,7 +370,6 @@ def reporte_inventario_pdf(request):
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
     elements = []
 
-    # Tabla 1: stock actual
     headers = ['Producto', 'Código', 'Stock actual', 'Stock mín.', 'Stock máx.', 'Estado']
     data = [[
         p.nombre, p.codigo_barra or '—',
@@ -319,7 +378,6 @@ def reporte_inventario_pdf(request):
     ] for p in productos]
     estilo_pdf(elements, 'Reporte de Inventario — Pakari Shop', headers, data)
 
-    # Tabla 2: resumen entradas/salidas por producto
     elements.append(Spacer(1, 24))
     headers2 = ['Producto', 'Total entradas', 'Total salidas', 'Neto']
     data2 = []
@@ -400,7 +458,7 @@ def reporte_contable_excel(request):
             f'{p.valor_descuento}%' if p.descuento else 'No',
             round(p.precio_final, 2),
             p.cantidad,
-            round(float(p.precio_neto) * p.cantidad, 2),  # CORREGIDO: precio_neto * stock
+            round(float(p.precio_neto) * p.cantidad, 2),
         ])
     estilo_excel(ws, headers)
     buffer = io.BytesIO()
@@ -425,7 +483,7 @@ def reporte_contable_pdf(request):
         f'${p.precio_con_iva:,.0f}',
         f'${p.precio_final:,.0f}',
         str(p.cantidad),
-        f'${float(p.precio_neto) * p.cantidad:,.0f}',  # CORREGIDO: precio_neto * stock
+        f'${float(p.precio_neto) * p.cantidad:,.0f}',
     ] for p in productos]
     estilo_pdf(elements, 'Reporte Contable — Pakari Shop', headers, data)
     doc.build(elements)
@@ -457,7 +515,8 @@ class NotificacionViewSet(viewsets.ModelViewSet):
         count = Notificacion.objects.filter(leida=False).count()
         return Response({'count': count})
 
-    # ── Catálogo (solo productos visibles) ───────────────────────────────────────
+
+# ── Catálogo (solo productos visibles) ───────────────────────────────────────
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo(request):
@@ -476,9 +535,10 @@ def toggle_visibilidad(request, producto_id):
         producto.save()
         return Response({'visible': producto.visible})
     except Producto.DoesNotExist:
-        return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)    
-  
-   # ── Perfil artesano ───────────────────────────────────────────────────────────
+        return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+
+# ── Perfil artesano ───────────────────────────────────────────────────────────
 @api_view(['GET', 'PATCH'])
 @permission_classes([AllowAny])
 def perfil_artesano(request, usuario_id):
@@ -499,9 +559,10 @@ def perfil_artesano(request, usuario_id):
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)   
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # ── Cambiar contraseña ────────────────────────────────────────────────────────
+
+# ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def cambiar_password(request, usuario_id):
