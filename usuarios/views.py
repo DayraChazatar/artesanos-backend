@@ -19,6 +19,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 # ── Imports de modelos ────────────────────────────────────────────────────────
 from .models import Usuario, Categoria, Producto, Notificacion
 from inventario.models import Kardex
+from storage_backend import upload_image
 
 # ── Imports de serializers ────────────────────────────────────────────────────
 from .serializers import (
@@ -88,7 +89,6 @@ def registro_artesano(request):
         return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
 
     data['tipo'] = 'artesano'
-    data['password'] = make_password(password)
 
     serializer = UsuarioSerializer(data=data)
     if serializer.is_valid():
@@ -112,18 +112,40 @@ class CategoriaViewSet(viewsets.ModelViewSet):
     permission_classes = [AllowAny]
 
     def create(self, request, *args, **kwargs):
-        print("DATA RECIBIDA:", request.data)
-        ser = CategoriaSerializer(data=request.data)
-        ser.is_valid()
-        print("ERRORES:", ser.errors)
-        return super().create(request, *args, **kwargs)
-
-    def get_queryset(self):
-        qs = super().get_queryset()
-        artesano_id = self.request.query_params.get('artesano')
-        if artesano_id:
-            qs = qs.filter(artesano_id=artesano_id)
-        return qs
+        print("🔥 ENTRO AL CREATE")
+        print("DATA:", request.data)
+        print("FILES:", request.FILES)
+    
+        imagen = request.FILES.get('imagen')
+        data = request.data.copy()
+    
+        if imagen:
+           import uuid
+           filename = f"{uuid.uuid4()}_{imagen.name}"
+           url = upload_image(imagen, 'productos', filename)
+           data['imagen'] = url
+    
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    def update(self, request, *args, **kwargs):
+        imagen = request.FILES.get('imagen')
+        data = request.data.copy()
+    
+        if imagen:
+           import uuid
+           filename = f"{uuid.uuid4()}_{imagen.name}"
+           url = upload_image(imagen, 'productos', filename)
+           data['imagen'] = url
+    
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
 
 
 # ── Productos ─────────────────────────────────────────────────────────────────
@@ -138,10 +160,21 @@ class ProductoViewSet(viewsets.ModelViewSet):
         return context
 
     def create(self, request, *args, **kwargs):
-        print("🔥 ENTRO AL CREATE")
-        print("DATA:", request.data)
-        print("FILES:", request.FILES)
-        return super().create(request, *args, **kwargs)
+        import uuid
+        imagen = request.FILES.get('imagen')
+        data = request.data.copy()
+
+        if imagen:
+           filename = f"{uuid.uuid4()}_{imagen.name}"
+           url = upload_image(imagen, 'productos', filename)
+           data['imagen'] = url
+        else:
+            data.pop('imagen', None)
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -552,15 +585,23 @@ def perfil_artesano(request, usuario_id):
         return Response(serializer.data)
 
     if request.method == 'PATCH':
-        serializer = UsuarioSerializer(
-            usuario, data=request.data, partial=True,
+       import uuid
+       data = request.data.copy()
+       foto = request.FILES.get('foto')
+    
+       if foto:
+          filename = f"{uuid.uuid4()}_{foto.name}"
+          url = upload_image(foto, 'perfiles', filename)
+          data['foto'] = url
+    
+    serializer = UsuarioSerializer(
+            usuario, data=data, partial=True,
             context={'request': request}
         )
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+    if serializer.is_valid():
+           serializer.save()
+           return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])

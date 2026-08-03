@@ -15,9 +15,14 @@ class UsuarioSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_foto_url(self, obj):
+        if not obj.foto:
+          return ''
+    # Si ya es una URL completa (Supabase), devolverla directamente
+        if str(obj.foto).startswith('http'):
+          return str(obj.foto)
         request = self.context.get('request')
-        if obj.foto and request:
-            return request.build_absolute_uri(obj.foto.url)
+        if request:
+           return request.build_absolute_uri(obj.foto.url)
         return ''
 
     def get_categoria_id(self, obj):
@@ -135,9 +140,10 @@ class ProductoSerializer(serializers.ModelSerializer):
 
 
     def get_imagen_url(self, obj):
-        request = self.context.get('request')
-        if obj.imagen and request:
-            return request.build_absolute_uri(obj.imagen.url)
+        if not obj.imagen:
+           return ''
+        if str(obj.imagen).startswith('http'):
+           return str(obj.imagen)
         return ''
 
     def validate(self, data):
@@ -188,9 +194,10 @@ class CatalogoProductoSerializer(serializers.ModelSerializer):
         ]
 
     def get_imagen_url(self, obj):
-        request = self.context.get('request')
-        if obj.imagen and request:
-            return request.build_absolute_uri(obj.imagen.url)
+        if not obj.imagen:
+           return ''
+        if str(obj.imagen).startswith('http'):
+           return str(obj.imagen)
         return ''
 
 
