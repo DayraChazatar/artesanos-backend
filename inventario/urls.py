@@ -17,5 +17,4 @@ urlpatterns = [
     path('pedidos/artesano/<int:artesano_id>/',views.pedidos_artesano,name='pedidos_artesano'),
     path('pedido/estado/',                     views.cambiar_estado,  name='cambiar_estado'),
     
-    
 ]
