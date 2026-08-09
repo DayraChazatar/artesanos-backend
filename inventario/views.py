@@ -246,6 +246,14 @@ def cambiar_estado(request):
                         pedido_ref = pedido.codigo,
                         creado_por = 'Sistema',
                     )
+                elif estado_nuevo == 'Devolucion aprobada':
+                    registrar_devolucion(
+                       producto   = producto,
+                       cantidad   = cantidad,
+                       pedido_ref = pedido.codigo,
+                       nota       = 'Devolución aprobada por el artesano',
+                       creado_por = 'Sistema',
+                    )
 
                 elif estado_nuevo == 'Devuelto':
                     registrar_devolucion(

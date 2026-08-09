@@ -23,10 +23,15 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
     def get_producto_imagen(self, obj):
         request = self.context.get('request')
         img = getattr(obj.producto, 'imagen', None)
-        if img and request:
-            return request.build_absolute_uri(img.url)
-        return ''
-
+        if not img:
+            return ''
+        if isinstance(img, str):
+            return img
+        try:
+            url = img.url
+        except (ValueError, AttributeError):
+            return ''
+        return request.build_absolute_uri(url) if request else url
 
 class PedidoSerializer(serializers.ModelSerializer):
     detalles        = DetallePedidoSerializer(many=True, read_only=True)
