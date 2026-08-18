@@ -112,6 +112,7 @@ class ProductoSerializer(serializers.ModelSerializer):
     artesano_nombre     = serializers.CharField(source='artesano.nombre', read_only=True)
     imagen_url          = serializers.SerializerMethodField()
     visible = serializers.BooleanField(required=False)
+    artesano_telefono = serializers.CharField(source='artesano.telefono', read_only=True)
 
     class Meta:
         model  = Producto
@@ -125,7 +126,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'precio_neto', 'precio_pvp', 'iva',
             'descuento', 'valor_descuento',
             'cantidad', 'stock_minimo', 'stock_maximo',
-            'artesano', 'artesano_nombre',
+            'artesano', 'artesano_nombre', 'artesano_telefono',
             'precio_con_iva', 'precio_final',
             'estado_stock', 'cantidad_reservada', 'cantidad_disponible',
             'imagen', 'imagen_url', 'visible',

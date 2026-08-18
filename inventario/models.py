@@ -8,18 +8,16 @@ from django.utils.timezone import now
 # ESTADOS DEL PEDIDO
 # ─────────────────────────────────────────────────────────────
 ESTADO_CHOICES = [
+    ('Pago pendiente', 'Pago pendiente'),
+    ('Pago confirmado', 'Pago confirmado'),
     ('Pendiente', 'Pendiente'),
     ('En proceso', 'En proceso'),
     ('Enviado', 'Enviado'),
     ('Entregado', 'Entregado'),
-
     ('Cancelado', 'Cancelado'),
-
     ('Devolucion solicitada', 'Devolucion solicitada'),
     ('Devolucion aprobada', 'Devolucion aprobada'),
     ('Devolucion rechazada', 'Devolucion rechazada'),
-
-    ('Devuelto', 'Devuelto'),
 ]
 
 

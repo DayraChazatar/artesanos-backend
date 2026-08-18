@@ -183,6 +183,11 @@ class Producto(models.Model):
     def __str__(self):
         return self.nombre
 
+class ContactoIniciado(models.Model):
+    artesano = models.ForeignKey(Usuario, related_name='contactos_recibidos', on_delete=models.CASCADE)
+    cliente = models.ForeignKey(Usuario, related_name='contactos_realizados', on_delete=models.CASCADE, null=True, blank=True)
+    producto = models.ForeignKey(Producto, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
 
 class Notificacion(models.Model):
     TIPOS = [

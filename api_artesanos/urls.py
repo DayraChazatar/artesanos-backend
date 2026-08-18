@@ -22,6 +22,7 @@ from usuarios.views import (
     reporte_inventario_excel, reporte_inventario_pdf,
     reporte_kardex_excel, reporte_kardex_pdf,
     reporte_contable_excel, reporte_contable_pdf,
+    registrar_contacto,
 )
 
 router = routers.DefaultRouter()
@@ -51,6 +52,7 @@ urlpatterns = [
     path('api/perfil/artesano/<int:usuario_id>/',            perfil_artesano),
     path('api/perfil/cambiar-password/<int:usuario_id>/',    cambiar_password),
     path('api/productos/<int:producto_id>/visibilidad/', toggle_visibilidad),
+    path('contactos/registrar/', registrar_contacto),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

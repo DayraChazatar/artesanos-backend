@@ -17,7 +17,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ── Imports de modelos ────────────────────────────────────────────────────────
-from .models import Usuario, Categoria, Producto, Notificacion
+from .models import Usuario, Categoria, Producto, Notificacion, ContactoIniciado
 from inventario.models import Kardex
 from storage_backend import upload_image
 
@@ -183,7 +183,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
             qs = qs.filter(artesano_id=artesano_id)
         return qs
 
-
+ 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo_productos(request):
@@ -631,3 +631,12 @@ def cambiar_password(request, usuario_id):
     usuario.set_password(password_nueva)
     usuario.save()
     return Response({'ok': True, 'mensaje': 'Contraseña actualizada correctamente'})
+
+@api_view(['POST'])
+def registrar_contacto(request):
+    ContactoIniciado.objects.create(
+        artesano_id=request.data.get('artesano_id'),
+        cliente_id=request.data.get('cliente_id'),  # puede ser null si no ha iniciado sesión
+        producto_id=request.data.get('producto_id'),
+    )
+    return Response({'ok': True}, status=201)

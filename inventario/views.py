@@ -1,8 +1,11 @@
 # inventario/views.py
+import hashlib
+import os
 
 from datetime import date
 import uuid
 from .models import Pedido, DetallePedido, Kardex, Devolucion
+
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -106,7 +109,7 @@ def crear_pedido(request):
             pedido = Pedido.objects.create(
                 cliente   = cliente,
                 artesano  = artesano_obj,
-                estado    = 'Pendiente',
+                estado    = 'Pago pendiente',
                 total     = total,
                 direccion = data.get('direccion', ''),
                 telefono  = data.get('telefono', ''),
@@ -522,3 +525,47 @@ def cambiar_password(request, usuario_id):
     usuario.set_password(password_nueva)
     usuario.save()
     return Response({'ok': True, 'mensaje': 'Contraseña actualizada correctamente'})
+
+
+# ─────────────────────────────────────────────────────────────
+# webhook_wompi
+# ─────────────────────────────────────────────────────────────
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def webhook_wompi(request):
+    data = request.data
+
+    try:
+        transaccion = data['data']['transaction']
+        propiedades = data['signature']['properties']
+        valores = ''.join(str(_get_nested(data['data'], p)) for p in propiedades)
+        cadena = f"{valores}{data['timestamp']}{os.getenv('WOMPI_EVENTS_SECRET')}"
+        firma_calculada = hashlib.sha256(cadena.encode()).hexdigest()
+
+        if firma_calculada != data['signature']['checksum']:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+    except (KeyError, TypeError):
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        pedido = Pedido.objects.get(codigo=transaccion['reference'])
+    except Pedido.DoesNotExist:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+
+    if transaccion['status'] == 'APPROVED':
+        pedido.estado = 'Pago confirmado'
+        pedido.save()
+    elif transaccion['status'] in ('DECLINED', 'ERROR', 'VOIDED'):
+        pedido.estado = 'Cancelado'
+        pedido.save()
+        for detalle in pedido.detallepedido_set.all():
+            _liberar_reserva(detalle.producto, detalle.cantidad)
+
+    return Response(status=status.HTTP_200_OK)
+
+
+def _get_nested(data, path):
+    """Navega un diccionario anidado usando notación 'a.b.c'"""
+    for key in path.split('.'):
+        data = data[key]
+    return data
