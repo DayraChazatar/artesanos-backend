@@ -129,6 +129,23 @@ class Producto(models.Model):
 
     # ── Visibilidad ──────────────────────────────────────────────────────
     visible = models.BooleanField(default=True, verbose_name='Visible en catálogo')
+    
+        # ── Variantes ────────────────────────────────────────────────────────
+    maneja_tallas = models.BooleanField(default=False, verbose_name='¿Maneja tallas?')
+
+    tallas = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='Tallas disponibles',
+        help_text='Lista de tallas, ej: ["S", "M", "L"]'
+    )
+
+    colores = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name='Colores disponibles',
+        help_text='Lista de objetos {hex, nombre}, ej: [{"hex": "#b45309", "nombre": "Rojo"}]'
+    )
 
     # ── Stock ────────────────────────────────────────────────────────────
     cantidad = models.PositiveIntegerField(

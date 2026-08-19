@@ -113,6 +113,8 @@ class ProductoSerializer(serializers.ModelSerializer):
     imagen_url          = serializers.SerializerMethodField()
     visible = serializers.BooleanField(required=False)
     artesano_telefono = serializers.CharField(source='artesano.telefono', read_only=True)
+    tallas  = serializers.JSONField(required=False, binary=True)
+    colores = serializers.JSONField(required=False, binary=True)
 
     class Meta:
         model  = Producto
@@ -130,6 +132,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'precio_con_iva', 'precio_final',
             'estado_stock', 'cantidad_reservada', 'cantidad_disponible',
             'imagen', 'imagen_url', 'visible',
+            'maneja_tallas', 'tallas', 'colores',
         ]
         extra_kwargs = {
             'categoria': {'required': False, 'allow_null': True},

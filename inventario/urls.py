@@ -16,5 +16,6 @@ urlpatterns = [
     path('pedidos/cliente/<int:cliente_id>/',  views.pedidos_cliente, name='pedidos_cliente'),
     path('pedidos/artesano/<int:artesano_id>/',views.pedidos_artesano,name='pedidos_artesano'),
     path('pedido/estado/',                     views.cambiar_estado,  name='cambiar_estado'),
+    path('wompi/webhook/', views.webhook_wompi, name='webhook_wompi'),
     
 ]
