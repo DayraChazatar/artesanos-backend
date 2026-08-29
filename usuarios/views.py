@@ -560,7 +560,7 @@ def catalogo(request):
 
 # ── Toggle visibilidad ────────────────────────────────────────────────────────
 @api_view(['PATCH'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def toggle_visibilidad(request, producto_id):
     try:
         producto = Producto.objects.get(id=producto_id)
@@ -573,7 +573,7 @@ def toggle_visibilidad(request, producto_id):
 
 # ── Perfil artesano ───────────────────────────────────────────────────────────
 @api_view(['GET', 'PATCH'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def perfil_artesano(request, usuario_id):
     try:
         usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
@@ -605,7 +605,7 @@ def perfil_artesano(request, usuario_id):
 
 # ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def cambiar_password(request, usuario_id):
     try:
         usuario = Usuario.objects.get(pk=usuario_id)
