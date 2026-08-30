@@ -533,6 +533,7 @@ def cambiar_password(request, usuario_id):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def webhook_wompi(request):
+
     data = request.data
 
     try:
@@ -569,3 +570,29 @@ def _get_nested(data, path):
     for key in path.split('.'):
         data = data[key]
     return data
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def wompi_integrity(request):
+    referencia = request.data.get('reference')
+    monto = request.data.get('amount_in_cents')
+    moneda = request.data.get('currency')
+
+    if not referencia or not monto or not moneda:
+        return Response(
+            {'error': 'Faltan datos para generar la firma'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    secreto = os.getenv('WOMPI_INTEGRITY_SECRET')
+
+    if not secreto:
+        return Response(
+            {'error': 'WOMPI_INTEGRITY_SECRET no configurado'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    cadena = f"{referencia}{monto}{moneda}{secreto}"
+    firma = hashlib.sha256(cadena.encode()).hexdigest()
+
+    return Response({'signature': firma})
