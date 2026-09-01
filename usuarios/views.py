@@ -15,7 +15,7 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly, BasePermission, SAFE_METHODS
 
 # ── Imports de modelos ────────────────────────────────────────────────────────
 from .models import Usuario, Categoria, Producto, Notificacion, ContactoIniciado
@@ -32,6 +32,40 @@ from .serializers import (
     NotificacionSerializer,
 )
 
+# ── Helper: obtener el Usuario real detrás del token ────────────────────────
+def get_usuario_actual(request):
+    """
+    Devuelve el objeto Usuario correspondiente a quien está autenticado,
+    o None si no se encuentra (no debería pasar si el token es válido).
+    """
+    try:
+        return Usuario.objects.get(correo=request.user.username)
+    except Usuario.DoesNotExist:
+        return None
+
+    # ── Permiso: solo el artesano dueño puede editar/borrar su producto ─────────
+class EsDuenioDelProducto(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:  # GET, HEAD, OPTIONS: cualquiera puede ver
+            return True
+        usuario_actual = get_usuario_actual(request)
+        return usuario_actual is not None and obj.artesano_id == usuario_actual.id
+
+# ── Permiso: solo el artesano dueño puede editar/borrar su categoría ────────
+class EsDuenioDeCategoria(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        usuario_actual = get_usuario_actual(request)
+        return usuario_actual is not None and obj.artesano_id == usuario_actual.id
+
+# ── Permiso: solo el artesano dueño del producto puede ver/tocar su kardex ──
+class EsDuenioDelKardex(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        usuario_actual = get_usuario_actual(request)
+        return usuario_actual is not None and obj.producto.artesano_id == usuario_actual.id
 
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
@@ -110,7 +144,13 @@ def registro_artesano(request):
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated, EsDuenioDeCategoria]
+    
+    def get_queryset(self):
+        usuario_actual = get_usuario_actual(self.request)
+        if usuario_actual is None:
+            return Categoria.objects.none()
+        return Categoria.objects.filter(artesano_id=usuario_actual.id)
 
     def create(self, request, *args, **kwargs):
         print("🔥 ENTRO AL CREATE")
@@ -153,7 +193,7 @@ class CategoriaViewSet(viewsets.ModelViewSet):
 class ProductoViewSet(viewsets.ModelViewSet):
     queryset = Producto.objects.all()
     serializer_class = ProductoSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly, EsDuenioDelProducto]
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -164,6 +204,14 @@ class ProductoViewSet(viewsets.ModelViewSet):
         import uuid
         imagen = request.FILES.get('imagen')
         data = request.data.copy()
+
+        usuario_actual = get_usuario_actual(request)
+        if usuario_actual is None or usuario_actual.tipo != 'artesano':
+            return Response(
+                {'error': 'Solo un artesano autenticado puede crear productos.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        data['artesano'] = usuario_actual.id  # ignora cualquier 'artesano' que venga del frontend
 
         if imagen:
            filename = f"{uuid.uuid4()}_{imagen.name}"
@@ -231,7 +279,13 @@ def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
 class KardexViewSet(viewsets.ModelViewSet):
     queryset = Kardex.objects.all().order_by('-fecha')
     serializer_class = KardexSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated, EsDuenioDelKardex]
+
+    def get_queryset(self):
+        usuario_actual = get_usuario_actual(self.request)
+        if usuario_actual is None:
+            return Kardex.objects.none()
+        return Kardex.objects.filter(producto__artesano_id=usuario_actual.id)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -530,7 +584,7 @@ def reporte_contable_pdf(request):
 class NotificacionViewSet(viewsets.ModelViewSet):
     queryset = Notificacion.objects.all()
     serializer_class = NotificacionSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     @action(detail=False, methods=['patch'], url_path='leer-todas')
     def leer_todas(self, request):
@@ -581,6 +635,10 @@ def perfil_artesano(request, usuario_id):
     except Usuario.DoesNotExist:
         return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != usuario.id:
+        return Response({'error': 'No tienes permiso para acceder a este perfil.'}, status=status.HTTP_403_FORBIDDEN)
+
     if request.method == 'GET':
         serializer = UsuarioSerializer(usuario, context={'request': request})
         return Response(serializer.data)
@@ -612,6 +670,10 @@ def cambiar_password(request, usuario_id):
         usuario = Usuario.objects.get(pk=usuario_id)
     except Usuario.DoesNotExist:
         return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != usuario.id:
+        return Response({'error': 'No tienes permiso para cambiar esta contraseña.'}, status=status.HTTP_403_FORBIDDEN)
 
     password_actual    = request.data.get('password_actual')
     password_nueva     = request.data.get('password_nueva')

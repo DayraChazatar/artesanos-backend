@@ -13,7 +13,7 @@ from django.contrib.auth.hashers import check_password
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
@@ -74,7 +74,7 @@ def _reponer_stock(producto: Producto, cantidad: int):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def crear_pedido(request):
     serializer = CrearPedidoSerializer(data=request.data)
     if not serializer.is_valid():
@@ -145,7 +145,7 @@ def crear_pedido(request):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def pedidos_cliente(request, cliente_id):
     pedidos = Pedido.objects.filter(
         cliente_id=cliente_id
@@ -158,7 +158,7 @@ def pedidos_cliente(request, cliente_id):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def pedidos_artesano(request, artesano_id):
     pedidos = Pedido.objects.filter(
         artesano_id=artesano_id
@@ -195,7 +195,7 @@ TRANSICIONES_VALIDAS = {
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def cambiar_estado(request):
     serializer = CambiarEstadoSerializer(data=request.data)
     if not serializer.is_valid():
@@ -330,7 +330,7 @@ def cambiar_estado(request):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def lista_kardex(request):
     qs = Kardex.objects.select_related('producto').all()
 
@@ -356,7 +356,7 @@ def lista_kardex(request):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def crear_kardex(request):
     producto_id  = request.data.get('producto')
     cantidad_raw = request.data.get('cantidad')
@@ -405,7 +405,7 @@ def crear_kardex(request):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def reposicion_stock(request):
     producto_id = request.data.get('producto')
     cantidad    = request.data.get('cantidad')
@@ -444,7 +444,7 @@ def reposicion_stock(request):
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def resumen_inventario(request):
     kardex = Kardex.objects.all()
 
