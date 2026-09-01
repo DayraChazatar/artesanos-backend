@@ -21,6 +21,7 @@ from usuarios.serializers import UsuarioSerializer
 
 from .models import Pedido, DetallePedido, Kardex
 
+from usuarios.views import get_usuario_actual
 from .serializers import (
     PedidoSerializer,
     CrearPedidoSerializer,
@@ -81,6 +82,10 @@ def crear_pedido(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     data = serializer.validated_data
+
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != data['cliente_id']:
+        return Response({'error': 'No puedes crear un pedido a nombre de otro usuario.'}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         cliente = Usuario.objects.get(pk=data['cliente_id'])
@@ -147,6 +152,10 @@ def crear_pedido(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def pedidos_cliente(request, cliente_id):
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != cliente_id:
+        return Response({'error': 'No puedes ver los pedidos de otro usuario.'}, status=status.HTTP_403_FORBIDDEN)
+
     pedidos = Pedido.objects.filter(
         cliente_id=cliente_id
     ).prefetch_related('detalles__producto')
@@ -160,6 +169,10 @@ def pedidos_cliente(request, cliente_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def pedidos_artesano(request, artesano_id):
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != artesano_id:
+        return Response({'error': 'No puedes ver los pedidos de otro artesano.'}, status=status.HTTP_403_FORBIDDEN)
+
     pedidos = Pedido.objects.filter(
         artesano_id=artesano_id
     ).prefetch_related('detalles__producto')
@@ -209,6 +222,12 @@ def cambiar_estado(request):
         pedido = get_object_or_404(Pedido, codigo=data['pedido_ref'])
     else:
         return Response({'error': 'Debes enviar pedido_id o pedido_ref'}, status=status.HTTP_400_BAD_REQUEST)
+
+    usuario_actual = get_usuario_actual(request)
+    es_el_cliente   = usuario_actual is not None and usuario_actual.id == pedido.cliente_id
+    es_el_artesano  = usuario_actual is not None and usuario_actual.id == pedido.artesano_id
+    if not (es_el_cliente or es_el_artesano):
+        return Response({'error': 'No tienes permiso sobre este pedido.'}, status=status.HTTP_403_FORBIDDEN)
 
     estado_anterior = pedido.estado
     estado_nuevo    = data['estado_nuevo']
@@ -332,21 +351,23 @@ def cambiar_estado(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def lista_kardex(request):
-    qs = Kardex.objects.select_related('producto').all()
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None:
+        return Response({'error': 'No autenticado.'}, status=status.HTTP_403_FORBIDDEN)
+
+    qs = Kardex.objects.select_related('producto').filter(producto__artesano_id=usuario_actual.id)
 
     desde       = request.query_params.get('desde')
     hasta       = request.query_params.get('hasta')
     producto_id = request.query_params.get('producto')
     tipo        = request.query_params.get('tipo')
     origen      = request.query_params.get('origen')
-    artesano_id = request.query_params.get('artesano')  # ← NUEVO
 
     if desde:       qs = qs.filter(fecha__gte=desde)
     if hasta:       qs = qs.filter(fecha__lte=hasta)
     if producto_id: qs = qs.filter(producto_id=producto_id)
     if tipo:        qs = qs.filter(tipo=tipo)
     if origen:      qs = qs.filter(origen=origen)
-    if artesano_id: qs = qs.filter(producto__artesano_id=artesano_id)  # ← NUEVO
 
     return Response(KardexSerializer(qs, many=True).data)
 
@@ -384,6 +405,10 @@ def crear_kardex(request):
             return Response({'error': 'El precio de venta al público debe ser un número positivo.'}, status=status.HTTP_400_BAD_REQUEST)
 
     producto = get_object_or_404(Producto, pk=producto_id)
+
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or producto.artesano_id != usuario_actual.id:
+        return Response({'error': 'No puedes ajustar el inventario de un producto que no es tuyo.'}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         movimiento = registrar_ajuste_manual(
@@ -423,6 +448,10 @@ def reposicion_stock(request):
 
     producto = get_object_or_404(Producto, pk=producto_id)
 
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or producto.artesano_id != usuario_actual.id:
+        return Response({'error': 'No puedes reponer stock de un producto que no es tuyo.'}, status=status.HTTP_403_FORBIDDEN)
+
     try:
         movimiento = registrar_reposicion(
             producto   = producto,
@@ -446,7 +475,11 @@ def reposicion_stock(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def resumen_inventario(request):
-    kardex = Kardex.objects.all()
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None:
+        return Response({'error': 'No autenticado.'}, status=status.HTTP_403_FORBIDDEN)
+
+    kardex = Kardex.objects.filter(producto__artesano_id=usuario_actual.id)
 
     total_entradas = sum(
         k.cantidad for k in kardex
@@ -554,6 +587,9 @@ def webhook_wompi(request):
         return Response(status=status.HTTP_404_NOT_FOUND)
 
     if transaccion['status'] == 'APPROVED':
+        monto_esperado = int(pedido.total * 100)
+        if transaccion.get('amount_in_cents') != monto_esperado:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
         pedido.estado = 'Pago confirmado'
         pedido.save()
     elif transaccion['status'] in ('DECLINED', 'ERROR', 'VOIDED'):
@@ -573,19 +609,29 @@ def _get_nested(data, path):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def wompi_integrity(request):
     referencia = request.data.get('reference')
-    monto = request.data.get('amount_in_cents')
     moneda = request.data.get('currency')
 
-    if not referencia or not monto or not moneda:
+    if not referencia or not moneda:
         return Response(
             {'error': 'Faltan datos para generar la firma'},
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    secreto = os.getenv('WOMPI_INTEGRITY_SECRET')
+    try:
+        pedido = Pedido.objects.get(codigo=referencia)
+    except Pedido.DoesNotExist:
+        return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != pedido.cliente_id:
+        return Response({'error': 'No puedes generar el pago de un pedido que no es tuyo.'}, status=status.HTTP_403_FORBIDDEN)
+
+    monto = int(pedido.total * 100)  # el monto real, calculado aquí, no confiamos en lo que mande el navegador
+
+    secreto = os.getenv('WOMPI_INTEGRITY_SECRET')
     if not secreto:
         return Response(
             {'error': 'WOMPI_INTEGRITY_SECRET no configurado'},
@@ -595,4 +641,4 @@ def wompi_integrity(request):
     cadena = f"{referencia}{monto}{moneda}{secreto}"
     firma = hashlib.sha256(cadena.encode()).hexdigest()
 
-    return Response({'signature': firma})
+    return Response({'signature': firma, 'amount_in_cents': monto})
