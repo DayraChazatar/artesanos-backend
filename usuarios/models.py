@@ -62,6 +62,11 @@ class Producto(models.Model):
         help_text='Unidades reservadas por pedidos en estado Pendiente.'
     )
 
+    visitas = models.IntegerField(
+        default=0,
+        help_text='Número de veces que se ha consultado el detalle de este producto.'
+    )
+
     precio_pvp = models.DecimalField(
         max_digits=12,
         decimal_places=2,
