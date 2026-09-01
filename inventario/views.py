@@ -608,7 +608,6 @@ def _get_nested(data, path):
     return data
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
 @permission_classes([IsAuthenticated])
 def wompi_integrity(request):
     referencia = request.data.get('reference')

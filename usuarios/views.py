@@ -67,10 +67,26 @@ class EsDuenioDelKardex(BasePermission):
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and obj.producto.artesano_id == usuario_actual.id
 
+# ── Permiso: solo el propio usuario puede ver/editar/borrar su registro ─────
+class EsElMismoUsuario(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        usuario_actual = get_usuario_actual(request)
+        return usuario_actual is not None and usuario_actual.id == obj.id
+
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
     queryset = Usuario.objects.all()
     serializer_class = UsuarioSerializer
+    permission_classes = [EsElMismoUsuario]
+
+    def get_queryset(self):
+        correo = self.request.query_params.get('correo')
+        if correo:
+            return Usuario.objects.filter(correo=correo)
+        usuario_actual = get_usuario_actual(self.request)
+        if usuario_actual is not None:
+            return Usuario.objects.filter(pk=usuario_actual.id)
+        return Usuario.objects.none()
 
     @action(detail=False, methods=['get'], url_path='artesanos')
     def artesanos(self, request):

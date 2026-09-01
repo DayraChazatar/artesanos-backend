@@ -13,6 +13,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Usuario
         fields = '__all__'
+        extra_kwargs = {'password': {'write_only': True}}
 
     def get_foto_url(self, obj):
         if not obj.foto:
