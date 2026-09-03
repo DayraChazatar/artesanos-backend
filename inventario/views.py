@@ -180,6 +180,9 @@ def pedidos_artesano(request, artesano_id):
 
 
 TRANSICIONES_VALIDAS = {
+    # El pago se confirmó (webhook Wompi) → el artesano acepta el pedido
+    'Pago confirmado': ['Pendiente'],
+
     # Cliente puede cancelar solo en Pendiente
     # Artesano acepta → En proceso
     'Pendiente': ['En proceso', 'Cancelado'],
@@ -343,7 +346,75 @@ def cambiar_estado(request):
         'stock_actual':    stock_actual,
         'stock_reservado': stock_reservado,
     })
+# ─────────────────────────────────────────────────────────────
+# CAMBIAR ESTADO — MASIVO (varios pedidos a la vez)
+# ─────────────────────────────────────────────────────────────
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cambiar_estado_masivo(request):
+    pedido_ids = request.data.get('pedido_ids', [])
+    estado_nuevo = request.data.get('estado_nuevo')
+
+    if not pedido_ids or not isinstance(pedido_ids, list):
+        return Response({'error': 'Debes enviar una lista de pedido_ids.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if estado_nuevo not in ('Enviado', 'Entregado'):
+        return Response({'error': 'Esta acción masiva solo admite los estados Enviado o Entregado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None:
+        return Response({'error': 'No autenticado.'}, status=status.HTTP_403_FORBIDDEN)
+
+    exitosos = []
+    fallidos = []
+
+    for pedido_id in pedido_ids:
+        try:
+            pedido = Pedido.objects.get(pk=pedido_id)
+        except Pedido.DoesNotExist:
+            fallidos.append({'pedido_id': pedido_id, 'error': 'No encontrado'})
+            continue
+
+        if pedido.artesano_id != usuario_actual.id:
+            fallidos.append({'pedido_id': pedido_id, 'error': 'No es un pedido tuyo'})
+            continue
+
+        estado_anterior = pedido.estado
+        permitidos = TRANSICIONES_VALIDAS.get(estado_anterior, [])
+        if estado_nuevo not in permitidos:
+            fallidos.append({'pedido_id': pedido_id, 'error': f'Transición no permitida: {estado_anterior} → {estado_nuevo}'})
+            continue
+
+        try:
+            with transaction.atomic():
+                if estado_nuevo == 'Entregado':
+                    detalles = pedido.detalles.select_related('producto').select_for_update()
+                    for detalle in detalles:
+                        registrar_venta(
+                            producto   = detalle.producto,
+                            cantidad   = detalle.cantidad,
+                            pedido_ref = pedido.codigo,
+                            creado_por = 'Sistema',
+                        )
+
+                if estado_nuevo == 'Enviado' and not pedido.numero_guia:
+                    pedido.numero_guia    = f'PKR-{pedido.codigo}-{uuid.uuid4().hex[:6].upper()}'
+                    pedido.transportadora = 'Coordinadora'
+                    pedido.fecha_envio    = date.today()
+
+                pedido.estado = estado_nuevo
+                pedido.save()
+
+            exitosos.append(pedido_id)
+        except Exception as e:
+            fallidos.append({'pedido_id': pedido_id, 'error': str(e)})
+
+    return Response({
+        'ok': True,
+        'exitosos': exitosos,
+        'fallidos': fallidos,
+    })
 # ─────────────────────────────────────────────────────────────
 # KARDEX — LISTAR
 # ─────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password, make_password
-from django.db.models import Sum
+from django.db.models import Sum, F
 import io
 from django.http import HttpResponse
 from openpyxl import Workbook
@@ -216,6 +216,13 @@ class ProductoViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        Producto.objects.filter(pk=instance.pk).update(visitas=F('visitas') + 1)
+        instance.refresh_from_db(fields=['visitas'])
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+        
     def create(self, request, *args, **kwargs):
         import uuid
         imagen = request.FILES.get('imagen')

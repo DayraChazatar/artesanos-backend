@@ -134,6 +134,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'estado_stock', 'cantidad_reservada', 'cantidad_disponible',
             'imagen', 'imagen_url', 'visible',
             'maneja_tallas', 'tallas', 'colores',
+            'visitas',
         ]
         extra_kwargs = {
             'categoria': {'required': False, 'allow_null': True},
@@ -141,6 +142,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             'imagen':    {'required': False},
             'lote':      {'required': False, 'allow_null': True, 'allow_blank': True},
             'codigo_barra': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'visitas':   {'read_only': True},
         }
 
 
