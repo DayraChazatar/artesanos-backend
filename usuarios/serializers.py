@@ -1,8 +1,8 @@
 # usuarios/serializers.py
 from rest_framework import serializers
 from django.contrib.auth.hashers import make_password
-from .models import Usuario, Categoria, Producto, Notificacion
-from inventario.models import Kardex
+from .models import Usuario, Categoria, Producto, Notificacion, Favorito, Resena
+from inventario.models import Kardex, DetallePedido
 
 
 class UsuarioSerializer(serializers.ModelSerializer):
@@ -233,3 +233,59 @@ class NotificacionSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Notificacion
         fields = ['id', 'tipo', 'titulo', 'detalle', 'leida', 'fecha', 'referencia_id', 'ruta']
+
+
+class FavoritoSerializer(serializers.ModelSerializer):
+    producto_nombre     = serializers.CharField(source='producto.nombre', read_only=True)
+    producto_imagen_url = serializers.CharField(source='producto.imagen', read_only=True, default='')
+    producto_precio     = serializers.FloatField(source='producto.precio_final', read_only=True)
+    artesano_nombre     = serializers.CharField(source='producto.artesano.nombre', read_only=True)
+
+    class Meta:
+        model  = Favorito
+        fields = [
+            'id', 'producto', 'producto_nombre', 'producto_imagen_url',
+            'producto_precio', 'artesano_nombre', 'creado_en',
+        ]
+        read_only_fields = ['id', 'creado_en']
+
+
+class ResenaSerializer(serializers.ModelSerializer):
+    cliente_nombre  = serializers.CharField(source='cliente.nombre', read_only=True)
+    producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
+
+    class Meta:
+        model  = Resena
+        fields = [
+            'id', 'producto', 'producto_nombre', 'cliente', 'cliente_nombre',
+            'calificacion', 'comentario', 'creado_en', 'actualizado_en',
+        ]
+        read_only_fields = ['id', 'cliente', 'creado_en', 'actualizado_en']
+
+    def validate_calificacion(self, value):
+        if not (1 <= value <= 5):
+            raise serializers.ValidationError('La calificación debe estar entre 1 y 5.')
+        return value
+
+    def validate(self, data):
+        request  = self.context.get('request')
+        producto = data.get('producto') or getattr(self.instance, 'producto', None)
+        if request is None or producto is None:
+            return data
+
+        # Solo al crear: exige que el cliente haya comprado y recibido el producto.
+        if self.instance is None:
+            from .views import get_usuario_actual
+            cliente = get_usuario_actual(request)
+            if cliente is None:
+                raise serializers.ValidationError('Debes iniciar sesión para dejar una reseña.')
+            compro = DetallePedido.objects.filter(
+                producto=producto,
+                pedido__cliente=cliente,
+                pedido__estado='Entregado',
+            ).exists()
+            if not compro:
+                raise serializers.ValidationError(
+                    'Solo puedes reseñar productos que ya te hayan sido entregados.'
+                )
+        return data

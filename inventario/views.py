@@ -3,13 +3,11 @@ import hashlib
 import os
 
 from datetime import date
-import uuid
 from .models import Pedido, DetallePedido, Kardex, Devolucion
 
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.contrib.auth.hashers import check_password
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -17,7 +15,6 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
-from usuarios.serializers import UsuarioSerializer
 
 from .models import Pedido, DetallePedido, Kardex
 
@@ -235,6 +232,12 @@ def cambiar_estado(request):
     estado_anterior = pedido.estado
     estado_nuevo    = data['estado_nuevo']
 
+    # Solo el artesano gestiona el despacho/entrega y las devoluciones; el
+    # cliente solo puede cancelar o solicitar una devolución.
+    SOLO_ARTESANO = ('En proceso', 'Enviado', 'Entregado', 'Devolucion aprobada', 'Devolucion rechazada')
+    if estado_nuevo in SOLO_ARTESANO and not es_el_artesano:
+        return Response({'error': 'Solo el artesano puede realizar esta acción.'}, status=status.HTTP_403_FORBIDDEN)
+
     if estado_anterior == estado_nuevo:
         return Response({'error': 'El pedido ya tiene ese estado'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -247,6 +250,17 @@ def cambiar_estado(request):
 
     if estado_nuevo == 'Devolucion solicitada' and estado_anterior != 'Entregado':
         return Response({'error': 'Solo puedes devolver pedidos entregados.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── Envío: como no hay integración con ninguna transportadora, el
+    # número de guía/ticket lo digita el artesano en la pestaña "Referencias"
+    # y es obligatorio — ya no se genera uno falso automáticamente.
+    numero_guia_nuevo  = (data.get('numero_guia') or '').strip()
+    transportadora_nueva = (data.get('transportadora') or '').strip()
+    if estado_nuevo == 'Enviado' and not numero_guia_nuevo:
+        return Response(
+            {'error': 'Debes indicar el número de referencia o ticket que te dio la transportadora.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         with transaction.atomic():
@@ -318,10 +332,14 @@ def cambiar_estado(request):
                     fecha_respuesta=date.today(),
                 )
 
-            if estado_nuevo == 'Enviado' and not pedido.numero_guia:
-                pedido.numero_guia    = f'PKR-{pedido.codigo}-{uuid.uuid4().hex[:6].upper()}'
-                pedido.transportadora = 'Coordinadora'
+            if estado_nuevo == 'Enviado':
+                pedido.numero_guia    = numero_guia_nuevo
+                if transportadora_nueva:
+                    pedido.transportadora = transportadora_nueva
                 pedido.fecha_envio    = date.today()
+
+            if estado_nuevo == 'Entregado':
+                pedido.fecha_entrega = date.today()
 
             pedido.save()
             pedido.refresh_from_db()
@@ -346,75 +364,12 @@ def cambiar_estado(request):
         'stock_actual':    stock_actual,
         'stock_reservado': stock_reservado,
     })
-# ─────────────────────────────────────────────────────────────
-# CAMBIAR ESTADO — MASIVO (varios pedidos a la vez)
-# ─────────────────────────────────────────────────────────────
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def cambiar_estado_masivo(request):
-    pedido_ids = request.data.get('pedido_ids', [])
-    estado_nuevo = request.data.get('estado_nuevo')
+# NOTA: se retiró cambiar_estado_masivo (marcar varios pedidos como
+# Enviado/Entregado de un clic). Ya no aplica: desde la pestaña
+# "Referencias" cada envío requiere su propio número de guía/ticket real,
+# así que no tiene sentido aplicar el mismo cambio a varios pedidos a la vez.
 
-    if not pedido_ids or not isinstance(pedido_ids, list):
-        return Response({'error': 'Debes enviar una lista de pedido_ids.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if estado_nuevo not in ('Enviado', 'Entregado'):
-        return Response({'error': 'Esta acción masiva solo admite los estados Enviado o Entregado.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    usuario_actual = get_usuario_actual(request)
-    if usuario_actual is None:
-        return Response({'error': 'No autenticado.'}, status=status.HTTP_403_FORBIDDEN)
-
-    exitosos = []
-    fallidos = []
-
-    for pedido_id in pedido_ids:
-        try:
-            pedido = Pedido.objects.get(pk=pedido_id)
-        except Pedido.DoesNotExist:
-            fallidos.append({'pedido_id': pedido_id, 'error': 'No encontrado'})
-            continue
-
-        if pedido.artesano_id != usuario_actual.id:
-            fallidos.append({'pedido_id': pedido_id, 'error': 'No es un pedido tuyo'})
-            continue
-
-        estado_anterior = pedido.estado
-        permitidos = TRANSICIONES_VALIDAS.get(estado_anterior, [])
-        if estado_nuevo not in permitidos:
-            fallidos.append({'pedido_id': pedido_id, 'error': f'Transición no permitida: {estado_anterior} → {estado_nuevo}'})
-            continue
-
-        try:
-            with transaction.atomic():
-                if estado_nuevo == 'Entregado':
-                    detalles = pedido.detalles.select_related('producto').select_for_update()
-                    for detalle in detalles:
-                        registrar_venta(
-                            producto   = detalle.producto,
-                            cantidad   = detalle.cantidad,
-                            pedido_ref = pedido.codigo,
-                            creado_por = 'Sistema',
-                        )
-
-                if estado_nuevo == 'Enviado' and not pedido.numero_guia:
-                    pedido.numero_guia    = f'PKR-{pedido.codigo}-{uuid.uuid4().hex[:6].upper()}'
-                    pedido.transportadora = 'Coordinadora'
-                    pedido.fecha_envio    = date.today()
-
-                pedido.estado = estado_nuevo
-                pedido.save()
-
-            exitosos.append(pedido_id)
-        except Exception as e:
-            fallidos.append({'pedido_id': pedido_id, 'error': str(e)})
-
-    return Response({
-        'ok': True,
-        'exitosos': exitosos,
-        'fallidos': fallidos,
-    })
 # ─────────────────────────────────────────────────────────────
 # KARDEX — LISTAR
 # ─────────────────────────────────────────────────────────────
@@ -574,62 +529,10 @@ def resumen_inventario(request):
     })
 
 
-# ─────────────────────────────────────────────────────────────
-# PERFIL ARTESANO
-# ─────────────────────────────────────────────────────────────
-
-@api_view(['GET', 'PATCH'])
-@permission_classes([AllowAny])
-def perfil_artesano(request, usuario_id):
-    try:
-        usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
-    except Usuario.DoesNotExist:
-        return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-
-    if request.method == 'GET':
-        serializer = UsuarioSerializer(usuario, context={'request': request})
-        return Response(serializer.data)
-
-    if request.method == 'PATCH':
-        serializer = UsuarioSerializer(usuario, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# ─────────────────────────────────────────────────────────────
-# CAMBIAR CONTRASEÑA
-# ─────────────────────────────────────────────────────────────
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def cambiar_password(request, usuario_id):
-    try:
-        usuario = Usuario.objects.get(pk=usuario_id)
-    except Usuario.DoesNotExist:
-        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-
-    password_actual    = request.data.get('password_actual')
-    password_nueva     = request.data.get('password_nueva')
-    password_confirmar = request.data.get('password_confirmar')
-
-    if not all([password_actual, password_nueva, password_confirmar]):
-        return Response({'error': 'Todos los campos son obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not check_password(password_actual, usuario.password):
-        return Response({'error': 'La contraseña actual es incorrecta'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if password_nueva != password_confirmar:
-        return Response({'error': 'Las contraseñas nuevas no coinciden'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if len(password_nueva) < 6:
-        return Response({'error': 'La contraseña debe tener al menos 6 caracteres'}, status=status.HTTP_400_BAD_REQUEST)
-
-    usuario.set_password(password_nueva)
-    usuario.save()
-    return Response({'ok': True, 'mensaje': 'Contraseña actualizada correctamente'})
-
+# NOTA: se retiraron perfil_artesano/cambiar_password de este archivo — eran
+# una copia duplicada y sin control de dueño (AllowAny) de las versiones
+# reales en usuarios/views.py, que son las que de verdad están conectadas
+# en las URLs (api/perfil/artesano/... y api/perfil/cambiar-password/...).
 
 # ─────────────────────────────────────────────────────────────
 # webhook_wompi
