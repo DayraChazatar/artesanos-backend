@@ -18,4 +18,9 @@ urlpatterns = [
     path('pedido/estado/',                     views.cambiar_estado,  name='cambiar_estado'),
     path('wompi/webhook/', views.webhook_wompi, name='webhook_wompi'),
     path('wompi/integrity/', views.wompi_integrity, name='wompi_integrity'),
+
+    # Favoritos
+    path('favoritos/',                          views.listar_favoritos, name='listar_favoritos'),
+    path('favoritos/agregar/',                  views.agregar_favorito, name='agregar_favorito'),
+    path('favoritos/quitar/<int:producto_id>/', views.quitar_favorito,  name='quitar_favorito'),
 ]

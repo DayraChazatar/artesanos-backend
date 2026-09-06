@@ -4,7 +4,7 @@ import os
 
 from datetime import date
 import uuid
-from .models import Pedido, DetallePedido, Kardex, Devolucion
+from .models import Pedido, DetallePedido, Kardex, Devolucion, Favorito
 
 
 from django.shortcuts import get_object_or_404
@@ -19,13 +19,14 @@ from rest_framework.response import Response
 from usuarios.models import Producto, Usuario
 from usuarios.serializers import UsuarioSerializer
 
-from .models import Pedido, DetallePedido, Kardex
+from .models import Pedido, DetallePedido, Kardex, Favorito
 
 from .serializers import (
     PedidoSerializer,
     CrearPedidoSerializer,
     CambiarEstadoSerializer,
     KardexSerializer,
+    FavoritoSerializer,
 )
 
 from .services import (
@@ -596,3 +597,30 @@ def wompi_integrity(request):
     firma = hashlib.sha256(cadena.encode()).hexdigest()
 
     return Response({'signature': firma})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_favoritos(request):
+    usuario = get_usuario_actual(request)
+    favoritos = Favorito.objects.filter(usuario=usuario).select_related('producto')
+    return Response(FavoritoSerializer(favoritos, many=True).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def agregar_favorito(request):
+    usuario = get_usuario_actual(request)
+    producto_id = request.data.get('producto_id')
+    favorito, creado = Favorito.objects.get_or_create(usuario=usuario, producto_id=producto_id)
+    if not creado:
+        return Response({'error': 'Ya está en tus favoritos'}, status=400)
+    return Response(FavoritoSerializer(favorito).data, status=201)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def quitar_favorito(request, producto_id):
+    usuario = get_usuario_actual(request)
+    Favorito.objects.filter(usuario=usuario, producto_id=producto_id).delete()
+    return Response({'ok': True})    

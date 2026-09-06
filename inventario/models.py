@@ -328,3 +328,36 @@ class Kardex(models.Model):
 
     def __str__(self):
         return f"{self.tipo} | {self.producto} | {self.cantidad} uds."
+
+
+# ─────────────────────────────────────────────────────────────
+# FAVORITOS
+# ─────────────────────────────────────────────────────────────
+
+class Favorito(models.Model):
+    """
+    Relación cliente-producto: productos que un cliente marcó como favorito.
+    """
+
+    usuario = models.ForeignKey(
+        'usuarios.Usuario',
+        on_delete=models.CASCADE,
+        related_name='favoritos'
+    )
+
+    producto = models.ForeignKey(
+        'usuarios.Producto',
+        on_delete=models.CASCADE,
+        related_name='favoritos_de'
+    )
+
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('usuario', 'producto')
+        ordering = ['-fecha']
+        verbose_name = 'Favorito'
+        verbose_name_plural = 'Favoritos'
+
+    def __str__(self):
+        return f'{self.usuario} ♥ {self.producto}'

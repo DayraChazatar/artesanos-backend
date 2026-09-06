@@ -32,6 +32,17 @@ from .serializers import (
 )
 
 
+# ── Helper: obtener el Usuario real detrás del token ────────────────────────
+def get_usuario_actual(request):
+    """
+    Devuelve el objeto Usuario correspondiente a quien está autenticado,
+    o None si no se encuentra (no debería pasar si el token es válido).
+    """
+    try:
+        return Usuario.objects.get(correo=request.user.username)
+    except Usuario.DoesNotExist:
+        return None
+
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
     queryset = Usuario.objects.all()
