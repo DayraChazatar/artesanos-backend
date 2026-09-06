@@ -418,6 +418,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         data['artesano'] = usuario_actual.id  # ignora cualquier 'artesano' que venga del frontend
+        data['visible'] = True  # todo producto nuevo nace visible en el catálogo
 
         if imagen:
            filename = f"{uuid.uuid4()}_{imagen.name}"

@@ -342,7 +342,7 @@ class Favorito(models.Model):
     usuario = models.ForeignKey(
         'usuarios.Usuario',
         on_delete=models.CASCADE,
-        related_name='favoritos'
+        related_name='favoritos_inventario'
     )
 
     producto = models.ForeignKey(
