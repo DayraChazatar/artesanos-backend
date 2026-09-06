@@ -11,9 +11,15 @@ from usuarios.views import (
     ProductoViewSet,
     KardexViewSet,
     NotificacionViewSet,
+    FavoritoViewSet,
+    ResenaViewSet,
     login,
+    login_google,
+    solicitar_reset_password,
+    confirmar_reset_password,
     registro_artesano,
     catalogo_productos,
+    catalogo,
     toggle_visibilidad,
     perfil_artesano,
     cambiar_password,
@@ -22,6 +28,7 @@ from usuarios.views import (
     reporte_inventario_excel, reporte_inventario_pdf,
     reporte_kardex_excel, reporte_kardex_pdf,
     reporte_contable_excel, reporte_contable_pdf,
+    reporte_envios_excel, reporte_envios_pdf,
     registrar_contacto,
 )
 
@@ -31,12 +38,17 @@ router.register(r'categorias',     CategoriaViewSet)
 router.register(r'productos',      ProductoViewSet)
 router.register(r'kardex',         KardexViewSet)
 router.register(r'notificaciones', NotificacionViewSet)
+router.register(r'favoritos',      FavoritoViewSet, basename='favorito')
+router.register(r'resenas',        ResenaViewSet, basename='resena')
 
 urlpatterns = [
     path('admin/',                                           admin.site.urls),
     path('api/login/',                                       login),
+    path('api/login-google/',                                login_google),
+    path('api/password-reset/solicitar/',                    solicitar_reset_password),
+    path('api/password-reset/confirmar/',                    confirmar_reset_password),
     path('api/registro-artesano/',                           registro_artesano),
-    path('api/catalogo/',                                    catalogo_productos),
+    path('api/catalogo/',                                    catalogo),
     path('api/productos/<int:producto_id>/visibilidad/',     toggle_visibilidad),
     path('api/asignar-categorias/',                          asignar_categoria_productos),
     path('api/',                                             include(router.urls)),
@@ -49,6 +61,8 @@ urlpatterns = [
     path('api/reportes/kardex/pdf/',                         reporte_kardex_pdf),
     path('api/reportes/contable/excel/',                     reporte_contable_excel),
     path('api/reportes/contable/pdf/',                       reporte_contable_pdf),
+    path('api/reportes/envios/excel/',                        reporte_envios_excel),
+    path('api/reportes/envios/pdf/',                          reporte_envios_pdf),
     path('api/perfil/artesano/<int:usuario_id>/',            perfil_artesano),
     path('api/perfil/cambiar-password/<int:usuario_id>/',    cambiar_password),
     path('api/productos/<int:producto_id>/visibilidad/', toggle_visibilidad),

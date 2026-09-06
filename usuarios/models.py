@@ -1,6 +1,10 @@
+import secrets
+from datetime import timedelta
+
 from django.db import models
 from django.contrib.auth.hashers import make_password, check_password
-   
+from django.utils import timezone
+
 
 class Usuario(models.Model):
     TIPO = (
@@ -60,6 +64,11 @@ class Producto(models.Model):
     cantidad_reservada = models.IntegerField(
         default=0,
         help_text='Unidades reservadas por pedidos en estado Pendiente.'
+    )
+
+    visitas = models.IntegerField(
+        default=0,
+        help_text='Número de veces que se ha consultado el detalle de este producto.'
     )
 
     precio_pvp = models.DecimalField(
@@ -225,3 +234,60 @@ class Notificacion(models.Model):
 
     def __str__(self):
         return f"[{self.tipo}] {self.titulo}"
+
+
+class PasswordResetToken(models.Model):
+    """Token de un solo uso para restablecer contraseña, enviado por correo."""
+    usuario   = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='reset_tokens')
+    token     = models.CharField(max_length=64, unique=True, editable=False, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    usado     = models.BooleanField(default=False)
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        super().save(*args, **kwargs)
+
+    @property
+    def expirado(self):
+        return timezone.now() > self.creado_en + timedelta(hours=1)
+
+    def __str__(self):
+        return f'Reset para {self.usuario.correo} ({"usado" if self.usado else "activo"})'
+
+
+class Favorito(models.Model):
+    """Productos guardados como favoritos por un cliente."""
+    cliente   = models.ForeignKey(
+        Usuario, on_delete=models.CASCADE, related_name='favoritos',
+        limit_choices_to={'tipo': 'cliente'},
+    )
+    producto  = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name='favorito_de')
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('cliente', 'producto')
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return f'{self.cliente.nombre} ♥ {self.producto.nombre}'
+
+
+class Resena(models.Model):
+    """Reseña de un cliente sobre un producto — solo si ya lo compró y le fue entregado."""
+    cliente        = models.ForeignKey(
+        Usuario, on_delete=models.CASCADE, related_name='resenas',
+        limit_choices_to={'tipo': 'cliente'},
+    )
+    producto       = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name='resenas')
+    calificacion   = models.PositiveSmallIntegerField()
+    comentario     = models.TextField(blank=True, default='')
+    creado_en      = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('cliente', 'producto')
+        ordering = ['-creado_en']
+
+    def __str__(self):
+        return f'{self.cliente.nombre} → {self.producto.nombre} ({self.calificacion}★)'
