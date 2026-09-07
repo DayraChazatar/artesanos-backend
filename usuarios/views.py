@@ -56,6 +56,13 @@ def get_usuario_actual(request):
     except Usuario.DoesNotExist:
         return None
 
+
+def _foto_url(usuario):
+    """Misma regla que UsuarioSerializer.get_foto_url, para usarla en las
+    respuestas de login (que no pasan por ese serializer)."""
+    foto = usuario.foto
+    return str(foto) if foto and str(foto).startswith('http') else ''
+
     # ── Permiso: solo el artesano dueño puede editar/borrar su producto ─────────
 class EsDuenioDelProducto(BasePermission):
     def has_object_permission(self, request, view, obj):
@@ -119,6 +126,24 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
+    def update(self, request, *args, **kwargs):
+        # Permite actualizar la foto de perfil subiendo un archivo real
+        # (a Supabase Storage), igual que ya funciona para el artesano —
+        # antes el cliente solo la guardaba como base64 en localStorage.
+        data = request.data.copy()
+        foto = request.FILES.get('foto')
+        if foto:
+            import uuid
+            filename = f"{uuid.uuid4()}_{foto.name}"
+            data['foto'] = upload_image(foto, 'perfiles', filename)
+
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=data, partial=partial, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -138,6 +163,7 @@ def login(request):
                 'nombre':  usuario.nombre,
                 'tipo':    usuario.tipo,
                 'token':   token.key,
+                'foto_url': _foto_url(usuario),
             })
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
@@ -205,6 +231,7 @@ def login_google(request):
         'correo':  usuario.correo,
         'tipo':    usuario.tipo,
         'token':   token.key,
+        'foto_url': _foto_url(usuario),
     })
 
 
@@ -421,21 +448,11 @@ class ProductoViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('categoria', 'artesano')
         artesano_id = self.request.query_params.get('artesano')
         if artesano_id:
             qs = qs.filter(artesano_id=artesano_id)
         return qs
-
- 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def catalogo_productos(request):
-    productos = Producto.objects.filter(cantidad__gt=0)
-    serializer = CatalogoProductoSerializer(
-        productos, many=True, context={'request': request}
-    )
-    return Response(serializer.data)
 
 
 @api_view(['POST'])
@@ -477,20 +494,22 @@ class KardexViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, EsDuenioDelKardex]
 
     def get_queryset(self):
+        # NOTA: antes existían dos "get_queryset" en esta clase — Python se
+        # queda con el último y el primero (que sí filtraba por dueño) nunca
+        # se ejecutaba. Eso hacía que /api/kardex/ devolviera el inventario
+        # de TODOS los artesanos en vez de solo el del usuario autenticado.
         usuario_actual = get_usuario_actual(self.request)
         if usuario_actual is None:
             return Kardex.objects.none()
-        return Kardex.objects.filter(producto__artesano_id=usuario_actual.id)
 
-    def get_queryset(self):
-        qs = super().get_queryset()
+        qs = Kardex.objects.filter(
+            producto__artesano_id=usuario_actual.id
+        ).select_related('producto')
+
         producto_id = self.request.query_params.get('producto')
-        artesano_id = self.request.query_params.get('artesano')
         if producto_id:
             qs = qs.filter(producto_id=producto_id)
-        if artesano_id:
-            qs = qs.filter(producto__artesano_id=artesano_id)
-        return qs
+        return qs.order_by('-fecha')
 
     def perform_create(self, serializer):
         kardex = serializer.save()
@@ -524,7 +543,7 @@ def _kardex_filtrado(request, artesano_id):
     """Devuelve el Kardex del artesano dado, aplicando filtros de fecha."""
     desde = request.query_params.get('desde')
     hasta = request.query_params.get('hasta')
-    qs = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('fecha')
+    qs = Kardex.objects.filter(producto__artesano_id=artesano_id).select_related('producto').order_by('fecha')
     if desde:
         qs = qs.filter(fecha__date__gte=desde)
     if hasta:
@@ -812,6 +831,7 @@ def _pedidos_con_guia(usuario_actual, artesano_id):
         Pedido.objects
         .filter(artesano_id=artesano_id or usuario_actual.id)
         .exclude(numero_guia__isnull=True).exclude(numero_guia='')
+        .select_related('cliente')
         .prefetch_related('detalles__producto')
         .order_by('-fecha_envio', '-fecha')
     )
@@ -1003,7 +1023,17 @@ class ResenaViewSet(viewsets.ModelViewSet):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo(request):
-    productos = Producto.objects.filter(visible=True)
+    productos = Producto.objects.filter(visible=True).select_related('categoria', 'artesano')
+
+    # Límite opcional (ej. la página de inicio solo necesita 3 "destacados"
+    # y antes traía el catálogo completo solo para mostrar tres).
+    limite = request.query_params.get('limit')
+    if limite:
+        try:
+            productos = productos[:max(1, int(limite))]
+        except ValueError:
+            pass
+
     serializer = CatalogoProductoSerializer(productos, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -1044,23 +1074,23 @@ def perfil_artesano(request, usuario_id):
         return Response(serializer.data)
 
     if request.method == 'PATCH':
-       import uuid
-       data = request.data.copy()
-       foto = request.FILES.get('foto')
-    
-       if foto:
-          filename = f"{uuid.uuid4()}_{foto.name}"
-          url = upload_image(foto, 'perfiles', filename)
-          data['foto'] = url
-    
-    serializer = UsuarioSerializer(
+        import uuid
+        data = request.data.copy()
+        foto = request.FILES.get('foto')
+
+        if foto:
+            filename = f"{uuid.uuid4()}_{foto.name}"
+            url = upload_image(foto, 'perfiles', filename)
+            data['foto'] = url
+
+        serializer = UsuarioSerializer(
             usuario, data=data, partial=True,
             context={'request': request}
         )
-    if serializer.is_valid():
-           serializer.save()
-           return Response(serializer.data)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])

@@ -18,7 +18,6 @@ from usuarios.views import (
     solicitar_reset_password,
     confirmar_reset_password,
     registro_artesano,
-    catalogo_productos,
     catalogo,
     toggle_visibilidad,
     perfil_artesano,

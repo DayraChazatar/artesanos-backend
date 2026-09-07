@@ -137,7 +137,7 @@ class Producto(models.Model):
     )
 
     # ── Visibilidad ──────────────────────────────────────────────────────
-    visible = models.BooleanField(default=True, verbose_name='Visible en catálogo')
+    visible = models.BooleanField(default=True, verbose_name='Visible en catálogo', db_index=True)
     
         # ── Variantes ────────────────────────────────────────────────────────
     maneja_tallas = models.BooleanField(default=False, verbose_name='¿Maneja tallas?')
