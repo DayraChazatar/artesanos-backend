@@ -93,6 +93,17 @@ class EsElMismoUsuario(BasePermission):
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and usuario_actual.id == obj.id
 
+# ── Helper: obtener el Usuario real detrás del token ────────────────────────
+def get_usuario_actual(request):
+    """
+    Devuelve el objeto Usuario correspondiente a quien está autenticado,
+    o None si no se encuentra (no debería pasar si el token es válido).
+    """
+    try:
+        return Usuario.objects.get(correo=request.user.username)
+    except Usuario.DoesNotExist:
+        return None
+
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
     queryset = Usuario.objects.all()
@@ -434,6 +445,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         data['artesano'] = usuario_actual.id  # ignora cualquier 'artesano' que venga del frontend
+        data['visible'] = True  # todo producto nuevo nace visible en el catálogo
 
         if imagen:
            filename = f"{uuid.uuid4()}_{imagen.name}"

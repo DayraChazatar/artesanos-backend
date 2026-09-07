@@ -1,6 +1,6 @@
 # inventario/serializers.py
 from rest_framework import serializers
-from .models import Kardex, Pedido, DetallePedido, Devolucion
+from .models import Kardex, Pedido, DetallePedido, Devolucion, Favorito
 
 class DevolucionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -110,3 +110,13 @@ class KardexSerializer(serializers.ModelSerializer):
         if value <= 0:
             raise serializers.ValidationError("La cantidad debe ser mayor que 0.")
         return value
+
+class FavoritoSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
+    producto_precio = serializers.DecimalField(source='producto.precio_final', max_digits=12, decimal_places=2, read_only=True)
+    artesano_nombre = serializers.CharField(source='producto.artesano.nombre', read_only=True)
+
+    class Meta:
+        model = Favorito
+        fields = ['id', 'producto', 'producto_nombre', 'producto_precio', 'artesano_nombre', 'fecha']
+        read_only_fields = ['id', 'fecha']        

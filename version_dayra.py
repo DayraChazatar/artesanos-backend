@@ -1,4 +1,5 @@
 # inventario/views.py
+import hashlib
 import os
 
 from datetime import date
@@ -15,7 +16,7 @@ from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
 
-from .models import Pedido, DetallePedido, Kardex, Favorito
+from .models import Pedido, DetallePedido, Kardex
 
 from usuarios.views import get_usuario_actual
 from .serializers import (
@@ -23,7 +24,6 @@ from .serializers import (
     CrearPedidoSerializer,
     CambiarEstadoSerializer,
     KardexSerializer,
-    FavoritoSerializer,
 )
 
 from .services import (
@@ -155,7 +155,7 @@ def pedidos_cliente(request, cliente_id):
 
     pedidos = Pedido.objects.filter(
         cliente_id=cliente_id
-    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
+    ).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 
@@ -172,7 +172,7 @@ def pedidos_artesano(request, artesano_id):
 
     pedidos = Pedido.objects.filter(
         artesano_id=artesano_id
-    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
+    ).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 
@@ -614,4 +614,4 @@ def wompi_integrity(request):
     cadena = f"{referencia}{monto}{moneda}{secreto}"
     firma = hashlib.sha256(cadena.encode()).hexdigest()
 
-    return Response({'signature': firma})
+    return Response({'signature': firma, 'amount_in_cents': monto})

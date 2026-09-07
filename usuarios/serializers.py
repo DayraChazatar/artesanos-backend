@@ -114,8 +114,6 @@ class ProductoSerializer(serializers.ModelSerializer):
     imagen_url          = serializers.SerializerMethodField()
     visible = serializers.BooleanField(required=False)
     artesano_telefono = serializers.CharField(source='artesano.telefono', read_only=True)
-    tallas  = serializers.JSONField(required=False, binary=True)
-    colores = serializers.JSONField(required=False, binary=True)
 
     class Meta:
         model  = Producto
