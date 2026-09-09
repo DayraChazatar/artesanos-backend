@@ -17,7 +17,7 @@ from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from django.db.models import Sum, F
 from django.http import HttpResponse
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
@@ -36,6 +36,7 @@ from storage_backend import upload_image
 # ── Imports de serializers ────────────────────────────────────────────────────
 from .serializers import (
     UsuarioSerializer,
+    ArtesanoPublicoSerializer,
     CategoriaSerializer,
     ProductoSerializer,
     CatalogoProductoSerializer,
@@ -125,8 +126,13 @@ class UsuarioViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='artesanos')
     def artesanos(self, request):
+        # Antes usaba UsuarioSerializer (fields = '__all__'), que expone
+        # correo, teléfono, biografía y foto de TODOS los artesanos a
+        # cualquier usuario autenticado — EsElMismoUsuario solo se aplica a
+        # objetos individuales, no a esta lista. Aquí solo va lo que tiene
+        # sentido mostrar públicamente (nombre, especialidad, categoría).
         qs = Usuario.objects.filter(tipo='artesano')
-        serializer = self.get_serializer(qs, many=True)
+        serializer = ArtesanoPublicoSerializer(qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
@@ -464,6 +470,194 @@ def asignar_categoria_productos(request):
 
     actualizados = Producto.objects.filter(pk__in=producto_ids).update(categoria=categoria)
     return Response({'ok': True, 'actualizados': actualizados})
+
+
+# ── Carga masiva de productos por Excel ─────────────────────────────────────
+# El artesano descarga una plantilla, la llena con varios productos y la
+# vuelve a subir — evita tener que crear cada producto uno por uno a mano.
+COLUMNAS_CARGA_MASIVA = [
+    'nombre', 'precio_neto', 'iva', 'cantidad',
+    'stock_minimo', 'stock_maximo', 'precio_pvp',
+]
+MAX_FILAS_CARGA_MASIVA = 500
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def plantilla_carga_masiva(request):
+    """Devuelve un archivo Excel en blanco (con encabezados y una fila de
+    ejemplo) para que el artesano lo llene y lo vuelva a subir."""
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.tipo != 'artesano':
+        return Response({'error': 'Solo un artesano puede descargar la plantilla.'}, status=status.HTTP_403_FORBIDDEN)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Productos'
+
+    encabezados = [
+        'nombre*', 'precio_neto*', 'iva (0, 5 o 19)*', 'cantidad*',
+        'stock_minimo*', 'stock_maximo', 'precio_pvp', 'foto (opcional)',
+    ]
+    ws.append(encabezados)
+    for col_idx in range(1, len(encabezados) + 1):
+        celda = ws.cell(row=1, column=col_idx)
+        celda.font = Font(bold=True, color='FFFFFF')
+        celda.fill = PatternFill('solid', fgColor='B45309')
+        celda.alignment = Alignment(horizontal='center')
+        ws.column_dimensions[celda.column_letter].width = 18
+    ws.column_dimensions['H'].width = 22
+    ws.row_dimensions[2].height = 70  # deja espacio para ver la foto de ejemplo
+
+    # Fila de ejemplo — se puede borrar antes de subir el archivo.
+    ws.append(['Ruana de lana', 85000, 19, 10, 2, 0, 95000, ''])
+
+    nota = ws.cell(row=4, column=1, value=(
+        '⚠️ BORRA la fila 2 de ejemplo ("Ruana de lana") antes de subir el archivo — si la dejas, '
+        'se crea como un producto real. Los campos con * son obligatorios. La categoría se asigna '
+        f'sola: "{usuario_actual.especialidad or usuario_actual.categoria}". El código de barra y '
+        'el lote también se generan solos (igual que al crear un producto uno por uno) — no hace '
+        'falta escribirlos aquí. No agregues ni renombres columnas.'
+    ))
+    nota.font = Font(italic=True, color='888888')
+
+    nota_foto = ws.cell(row=5, column=1, value=(
+        'Para la foto: en Excel, ve a Insertar → Imágenes y colócala DENTRO de la fila '
+        'del producto (columna "foto"), una imagen por fila. Es opcional — si no le pones '
+        'foto, el producto se crea igual y se le puede agregar después desde "Editar".'
+    ))
+    nota_foto.font = Font(italic=True, color='888888')
+
+    response = HttpResponse(
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response['Content-Disposition'] = 'attachment; filename="plantilla_productos_pakari.xlsx"'
+    wb.save(response)
+    return response
+
+
+def _bytes_de_imagen_embebida(img):
+    """Openpyxl no tiene un método público estable para leer los bytes de
+    una imagen ya incrustada en un .xlsx cargado desde disco — `_data()` es
+    el que existe hoy (openpyxl 3.x); se deja un respaldo por si cambia en
+    otra versión."""
+    if hasattr(img, '_data') and callable(img._data):
+        try:
+            return img._data()
+        except Exception:
+            pass
+    ref = getattr(img, 'ref', None)
+    if ref is not None and hasattr(ref, 'read'):
+        ref.seek(0)
+        return ref.read()
+    return None
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def carga_masiva_productos(request):
+    """Crea varios productos a la vez a partir del Excel de la plantilla.
+    Cada fila se valida igual que si el producto se creara a mano (mismo
+    ProductoSerializer); una fila con error no bloquea a las demás — al
+    final se informa qué se creó y qué falló, y por qué. Si la fila trae
+    una foto insertada en la columna "foto", se sube igual que si se
+    subiera desde el formulario normal. El código de barra y el lote se
+    generan solos, igual que en el formulario manual — el artesano no los
+    escribe."""
+    import uuid
+    import time
+    import random
+    from datetime import datetime
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.tipo != 'artesano':
+        return Response({'error': 'Solo un artesano puede cargar productos.'}, status=status.HTTP_403_FORBIDDEN)
+
+    archivo = request.FILES.get('archivo')
+    if not archivo:
+        return Response({'error': 'Debes adjuntar un archivo .xlsx'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        wb = load_workbook(archivo, data_only=True)
+        ws = wb.active
+    except Exception:
+        return Response({'error': 'El archivo no es un Excel válido (.xlsx). Usa la plantilla descargada.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    filas = list(ws.iter_rows(min_row=2, max_col=len(COLUMNAS_CARGA_MASIVA), values_only=True))
+    if len(filas) > MAX_FILAS_CARGA_MASIVA:
+        return Response({'error': f'Máximo {MAX_FILAS_CARGA_MASIVA} productos por carga.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Mapea cada imagen incrustada a la fila (1-indexada) donde el artesano
+    # la puso, para poder emparejarla con los datos de esa misma fila.
+    imagen_por_fila = {}
+    for img in getattr(ws, '_images', []):
+        try:
+            fila_imagen = img.anchor._from.row + 1
+        except AttributeError:
+            continue
+        imagen_por_fila.setdefault(fila_imagen, img)
+
+    creados = []
+    errores = []
+    avisos = []
+
+    for idx, fila in enumerate(filas, start=2):
+        if fila is None or all(c is None or str(c).strip() == '' for c in fila):
+            continue  # fila vacía (ej. la nota al pie de la plantilla) — se ignora
+
+        valores = dict(zip(COLUMNAS_CARGA_MASIVA, fila))
+        nombre = str(valores.get('nombre') or '').strip()
+
+        try:
+            data = {
+                'nombre':        nombre,
+                'precio_neto':   valores.get('precio_neto'),
+                'iva':           int(valores['iva']) if valores.get('iva') not in (None, '') else 0,
+                'cantidad':      valores.get('cantidad') or 0,
+                'stock_minimo':  valores.get('stock_minimo') or 0,
+                'stock_maximo':  valores.get('stock_maximo') or 0,
+                'precio_pvp':    valores.get('precio_pvp') or None,
+                # Igual que en el formulario manual: el artesano no los
+                # escribe, se generan solos (con la fila incluida para que
+                # no choquen entre sí dentro de la misma carga).
+                'codigo_barra':  f"PROD-{int(time.time() * 1000) % 1_000_000:06d}{idx:02d}{random.randint(0, 9)}",
+                'lote':          f"{datetime.now():%Y%m}-{int(time.time() * 1000) % 10000:04d}{idx:02d}",
+                'artesano':      usuario_actual.id,
+                # La categoría siempre es la propia del artesano — no tiene
+                # sentido pedirle que la escriba a mano en el Excel.
+                'categoria':     usuario_actual.categoria_id,
+                'visible':       True,
+            }
+        except (TypeError, ValueError) as e:
+            errores.append({'fila': idx, 'nombre': nombre, 'error': f'Dato inválido: {e}'})
+            continue
+
+        # Foto incrustada en esa fila (opcional) — si algo falla al subirla,
+        # el producto se crea igual, solo sin foto, y se avisa aparte.
+        img = imagen_por_fila.get(idx)
+        if img is not None:
+            try:
+                datos_imagen = _bytes_de_imagen_embebida(img)
+                if datos_imagen:
+                    nombre_archivo = f"{uuid.uuid4()}_producto.png"
+                    url = upload_image(io.BytesIO(datos_imagen), 'productos', nombre_archivo)
+                    data['imagen'] = url
+            except Exception:
+                avisos.append({'fila': idx, 'nombre': nombre, 'mensaje': 'No se pudo subir la foto de esta fila; el producto se creará sin foto.'})
+
+        serializer = ProductoSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            creados.append({'fila': idx, 'nombre': nombre})
+        else:
+            errores.append({'fila': idx, 'nombre': nombre, 'error': serializer.errors})
+
+    return Response({
+        'total_filas':     len(filas),
+        'creados':         len(creados),
+        'detalle_creados': creados,
+        'errores':         errores,
+        'avisos':          avisos,
+    }, status=status.HTTP_201_CREATED if creados else status.HTTP_400_BAD_REQUEST)
 
 
 # ── Helper notificaciones ─────────────────────────────────────────────────────

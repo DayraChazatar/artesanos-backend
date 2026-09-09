@@ -81,6 +81,31 @@ class RegistroArtesanoSerializer(serializers.ModelSerializer):
         validated_data['categoria'] = categoria
         return super().create(validated_data)
 
+class ArtesanoPublicoSerializer(serializers.ModelSerializer):
+    """Vista pública/reducida de un artesano — a diferencia de
+    UsuarioSerializer (fields='__all__'), aquí NO va correo, teléfono ni
+    biografía: solo lo que tiene sentido mostrar a otros usuarios."""
+    foto_url         = serializers.SerializerMethodField()
+    categoria_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Usuario
+        fields = ['id', 'nombre', 'especialidad', 'foto_url', 'categoria', 'categoria_nombre']
+
+    def get_foto_url(self, obj):
+        if not obj.foto:
+            return ''
+        if str(obj.foto).startswith('http'):
+            return str(obj.foto)
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.foto.url)
+        return ''
+
+    def get_categoria_nombre(self, obj):
+        return obj.categoria.nombre if obj.categoria_id else None
+
+
 class CategoriaSerializer(serializers.ModelSerializer):
     cantidad_artesanos = serializers.SerializerMethodField()
 
