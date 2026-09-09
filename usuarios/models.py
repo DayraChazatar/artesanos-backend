@@ -23,6 +23,18 @@ class Usuario(models.Model):
     foto = models.CharField(max_length=500, blank=True, null=True)
     tipo = models.CharField(max_length=10, choices=TIPO)
 
+    # La categoría vive del lado del artesano (muchos artesanos pueden
+    # compartir la misma categoría, ej. varios en "Arte en Telas") — antes
+    # estaba al revés (Categoria.artesano), lo que forzaba que cada
+    # categoría solo pudiera tener UN artesano.
+    categoria = models.ForeignKey(
+        'Categoria',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='artesanos',
+    )
+
     def __str__(self):
         return f"{self.nombre} ({self.tipo})"
 
@@ -34,16 +46,11 @@ class Usuario(models.Model):
 
 
 class Categoria(models.Model):
+    # Catálogo de referencia (Cerámica, Tejidos, ...) — varios artesanos
+    # pueden compartir la misma; quién pertenece a cuál se guarda en
+    # Usuario.categoria (ver related_name='artesanos').
     nombre      = models.CharField(max_length=100)
     descripcion = models.TextField(blank=True, null=True)
-    artesano = models.ForeignKey(
-        Usuario,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='categorias',
-        limit_choices_to={'tipo': 'artesano'}
-    )
 
     def __str__(self):
         return self.nombre

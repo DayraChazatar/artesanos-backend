@@ -6,7 +6,7 @@ import secrets
 import urllib.request
 import urllib.error
 
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, mixins
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework.decorators import api_view, action, permission_classes
@@ -67,14 +67,6 @@ def _foto_url(usuario):
 class EsDuenioDelProducto(BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:  # GET, HEAD, OPTIONS: cualquiera puede ver
-            return True
-        usuario_actual = get_usuario_actual(request)
-        return usuario_actual is not None and obj.artesano_id == usuario_actual.id
-
-# ── Permiso: solo el artesano dueño puede editar/borrar su categoría ────────
-class EsDuenioDeCategoria(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        if request.method in SAFE_METHODS:
             return True
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and obj.artesano_id == usuario_actual.id
@@ -354,9 +346,11 @@ def registro_artesano(request):
     serializer = UsuarioSerializer(data=data)
     if serializer.is_valid():
         usuario = serializer.save()
-        # Asignar la categoría al artesano recién creado
-        categoria.artesano = usuario
-        categoria.save()
+        # Asignar la categoría al artesano recién creado — varios artesanos
+        # pueden compartir la misma categoría, así que esto ya no la "toma"
+        # en exclusiva, solo vincula a este artesano con ella.
+        usuario.categoria = categoria
+        usuario.save(update_fields=['categoria'])
         return Response({
             'success': True,
             'id':      usuario.id,
@@ -367,52 +361,36 @@ def registro_artesano(request):
 
 
 # ── Categorías ────────────────────────────────────────────────────────────────
-class CategoriaViewSet(viewsets.ModelViewSet):
+# Solo lectura por API: varios artesanos comparten cada categoría, así que
+# crearlas/editarlas/borrarlas ahora es una tarea de administración (se hace
+# desde Django Admin), no algo que un artesano individual deba poder tocar
+# desde su panel — cambiarle el nombre afectaría a todos los que la comparten.
+class CategoriaViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
-    permission_classes = [IsAuthenticated, EsDuenioDeCategoria]
-    
-    def get_queryset(self):
-        usuario_actual = get_usuario_actual(self.request)
-        if usuario_actual is None:
-            return Categoria.objects.none()
-        return Categoria.objects.filter(artesano_id=usuario_actual.id)
+    permission_classes = [IsAuthenticated]
 
-    def create(self, request, *args, **kwargs):
-        print("🔥 ENTRO AL CREATE")
-        print("DATA:", request.data)
-        print("FILES:", request.FILES)
-    
-        imagen = request.FILES.get('imagen')
-        data = request.data.copy()
-    
-        if imagen:
-           import uuid
-           filename = f"{uuid.uuid4()}_{imagen.name}"
-           url = upload_image(imagen, 'productos', filename)
-           data['imagen'] = url
-    
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
-    def update(self, request, *args, **kwargs):
-        imagen = request.FILES.get('imagen')
-        data = request.data.copy()
-    
-        if imagen:
-           import uuid
-           filename = f"{uuid.uuid4()}_{imagen.name}"
-           url = upload_image(imagen, 'productos', filename)
-           data['imagen'] = url
-    
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
+    def _es_consulta_disponibles(self):
+        # El formulario de registro de artesano necesita ver la lista
+        # completa de categorías para elegir una — y quien se está
+        # registrando, por definición, no tiene cuenta ni sesión activa. Por
+        # eso este caso puntual queda público.
+        return self.action == 'list' and self.request.query_params.get('disponibles') == 'true'
+
+    def get_permissions(self):
+        if self._es_consulta_disponibles():
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        if self._es_consulta_disponibles():
+            # Ya no se filtra por "sin artesano" — con varios artesanos por
+            # categoría, todas siguen estando disponibles para elegir.
+            return Categoria.objects.all()
+        usuario_actual = get_usuario_actual(self.request)
+        if usuario_actual is None or usuario_actual.categoria_id is None:
+            return Categoria.objects.none()
+        return Categoria.objects.filter(pk=usuario_actual.categoria_id)
 
 
 # ── Productos ─────────────────────────────────────────────────────────────────

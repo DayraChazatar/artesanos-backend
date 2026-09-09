@@ -9,12 +9,16 @@ class ProductoAdmin(admin.ModelAdmin):
 
 @admin.register(Categoria)
 class CategoriaAdmin(admin.ModelAdmin):
-    list_display = ['nombre', 'descripcion', 'artesano']
+    list_display = ['nombre', 'descripcion', 'cantidad_artesanos']
+
+    def cantidad_artesanos(self, obj):
+        return obj.artesanos.count()
+    cantidad_artesanos.short_description = 'Artesanos en esta categoría'
 
 @admin.register(Usuario)
 class UsuarioAdmin(admin.ModelAdmin):
-    list_display = ['nombre', 'correo', 'tipo', 'telefono']
-    list_filter = ['tipo']
+    list_display = ['nombre', 'correo', 'tipo', 'telefono', 'categoria']
+    list_filter = ['tipo', 'categoria']
     search_fields = ['nombre', 'correo']
 
 @admin.register(Notificacion)
