@@ -147,13 +147,14 @@ def login(request):
                 'success': True,
                 'id':      usuario.id,
                 'nombre':  usuario.nombre,
+                'correo':  usuario.correo,
                 'tipo':    usuario.tipo,
+                'foto':    usuario.foto or None,
                 'token':   token.key,
             })
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
-
 
 # ── Login con Google ───────────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.getenv(
@@ -1043,9 +1044,9 @@ def toggle_visibilidad(request, producto_id):
 @permission_classes([IsAuthenticated])
 def perfil_artesano(request, usuario_id):
     try:
-        usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
+        usuario = Usuario.objects.get(pk=usuario_id)
     except Usuario.DoesNotExist:
-        return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
     usuario_actual = get_usuario_actual(request)
     if usuario_actual is None or usuario_actual.id != usuario.id:
@@ -1056,23 +1057,23 @@ def perfil_artesano(request, usuario_id):
         return Response(serializer.data)
 
     if request.method == 'PATCH':
-       import uuid
-       data = request.data.copy()
-       foto = request.FILES.get('foto')
-    
-       if foto:
-          filename = f"{uuid.uuid4()}_{foto.name}"
-          url = upload_image(foto, 'perfiles', filename)
-          data['foto'] = url
-    
-    serializer = UsuarioSerializer(
+        import uuid
+        data = request.data.copy()
+        foto = request.FILES.get('foto')
+
+        if foto:
+            filename = f"{uuid.uuid4()}_{foto.name}"
+            url = upload_image(foto, 'perfiles', filename)
+            data['foto'] = url
+
+        serializer = UsuarioSerializer(
             usuario, data=data, partial=True,
             context={'request': request}
         )
-    if serializer.is_valid():
-           serializer.save()
-           return Response(serializer.data)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])
