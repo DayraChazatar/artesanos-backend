@@ -55,7 +55,8 @@ class Pedido(models.Model):
     estado = models.CharField(
         max_length=30,
         choices=ESTADO_CHOICES,
-        default='Pendiente'
+        default='Pendiente',
+        db_index=True,  # se filtra constantemente (pestañas Pedidos/Historial, reportes)
     )
 
     total = models.DecimalField(
@@ -305,7 +306,7 @@ class Kardex(models.Model):
         blank=True
     )
 
-    fecha = models.DateField()
+    fecha = models.DateField(db_index=True)  # se filtra por rango en reportes constantemente
 
     nota = models.TextField(
         blank=True,

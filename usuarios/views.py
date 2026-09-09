@@ -6,7 +6,7 @@ import secrets
 import urllib.request
 import urllib.error
 
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, mixins
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
 from rest_framework.decorators import api_view, action, permission_classes
@@ -56,18 +56,17 @@ def get_usuario_actual(request):
     except Usuario.DoesNotExist:
         return None
 
+
+def _foto_url(usuario):
+    """Misma regla que UsuarioSerializer.get_foto_url, para usarla en las
+    respuestas de login (que no pasan por ese serializer)."""
+    foto = usuario.foto
+    return str(foto) if foto and str(foto).startswith('http') else ''
+
     # ── Permiso: solo el artesano dueño puede editar/borrar su producto ─────────
 class EsDuenioDelProducto(BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:  # GET, HEAD, OPTIONS: cualquiera puede ver
-            return True
-        usuario_actual = get_usuario_actual(request)
-        return usuario_actual is not None and obj.artesano_id == usuario_actual.id
-
-# ── Permiso: solo el artesano dueño puede editar/borrar su categoría ────────
-class EsDuenioDeCategoria(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        if request.method in SAFE_METHODS:
             return True
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and obj.artesano_id == usuario_actual.id
@@ -130,6 +129,24 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
+    def update(self, request, *args, **kwargs):
+        # Permite actualizar la foto de perfil subiendo un archivo real
+        # (a Supabase Storage), igual que ya funciona para el artesano —
+        # antes el cliente solo la guardaba como base64 en localStorage.
+        data = request.data.copy()
+        foto = request.FILES.get('foto')
+        if foto:
+            import uuid
+            filename = f"{uuid.uuid4()}_{foto.name}"
+            data['foto'] = upload_image(foto, 'perfiles', filename)
+
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=data, partial=partial, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -151,6 +168,7 @@ def login(request):
                 'tipo':    usuario.tipo,
                 'foto':    usuario.foto or None,
                 'token':   token.key,
+                'foto_url': _foto_url(usuario),
             })
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
@@ -217,6 +235,7 @@ def login_google(request):
         'correo':  usuario.correo,
         'tipo':    usuario.tipo,
         'token':   token.key,
+        'foto_url': _foto_url(usuario),
     })
 
 
@@ -328,9 +347,11 @@ def registro_artesano(request):
     serializer = UsuarioSerializer(data=data)
     if serializer.is_valid():
         usuario = serializer.save()
-        # Asignar la categoría al artesano recién creado
-        categoria.artesano = usuario
-        categoria.save()
+        # Asignar la categoría al artesano recién creado — varios artesanos
+        # pueden compartir la misma categoría, así que esto ya no la "toma"
+        # en exclusiva, solo vincula a este artesano con ella.
+        usuario.categoria = categoria
+        usuario.save(update_fields=['categoria'])
         return Response({
             'success': True,
             'id':      usuario.id,
@@ -341,52 +362,36 @@ def registro_artesano(request):
 
 
 # ── Categorías ────────────────────────────────────────────────────────────────
-class CategoriaViewSet(viewsets.ModelViewSet):
+# Solo lectura por API: varios artesanos comparten cada categoría, así que
+# crearlas/editarlas/borrarlas ahora es una tarea de administración (se hace
+# desde Django Admin), no algo que un artesano individual deba poder tocar
+# desde su panel — cambiarle el nombre afectaría a todos los que la comparten.
+class CategoriaViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
-    permission_classes = [IsAuthenticated, EsDuenioDeCategoria]
-    
-    def get_queryset(self):
-        usuario_actual = get_usuario_actual(self.request)
-        if usuario_actual is None:
-            return Categoria.objects.none()
-        return Categoria.objects.filter(artesano_id=usuario_actual.id)
+    permission_classes = [IsAuthenticated]
 
-    def create(self, request, *args, **kwargs):
-        print("🔥 ENTRO AL CREATE")
-        print("DATA:", request.data)
-        print("FILES:", request.FILES)
-    
-        imagen = request.FILES.get('imagen')
-        data = request.data.copy()
-    
-        if imagen:
-           import uuid
-           filename = f"{uuid.uuid4()}_{imagen.name}"
-           url = upload_image(imagen, 'productos', filename)
-           data['imagen'] = url
-    
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
-    def update(self, request, *args, **kwargs):
-        imagen = request.FILES.get('imagen')
-        data = request.data.copy()
-    
-        if imagen:
-           import uuid
-           filename = f"{uuid.uuid4()}_{imagen.name}"
-           url = upload_image(imagen, 'productos', filename)
-           data['imagen'] = url
-    
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
+    def _es_consulta_disponibles(self):
+        # El formulario de registro de artesano necesita ver la lista
+        # completa de categorías para elegir una — y quien se está
+        # registrando, por definición, no tiene cuenta ni sesión activa. Por
+        # eso este caso puntual queda público.
+        return self.action == 'list' and self.request.query_params.get('disponibles') == 'true'
+
+    def get_permissions(self):
+        if self._es_consulta_disponibles():
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        if self._es_consulta_disponibles():
+            # Ya no se filtra por "sin artesano" — con varios artesanos por
+            # categoría, todas siguen estando disponibles para elegir.
+            return Categoria.objects.all()
+        usuario_actual = get_usuario_actual(self.request)
+        if usuario_actual is None or usuario_actual.categoria_id is None:
+            return Categoria.objects.none()
+        return Categoria.objects.filter(pk=usuario_actual.categoria_id)
 
 
 # ── Productos ─────────────────────────────────────────────────────────────────
@@ -434,21 +439,11 @@ class ProductoViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('categoria', 'artesano')
         artesano_id = self.request.query_params.get('artesano')
         if artesano_id:
             qs = qs.filter(artesano_id=artesano_id)
         return qs
-
- 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def catalogo_productos(request):
-    productos = Producto.objects.filter(cantidad__gt=0)
-    serializer = CatalogoProductoSerializer(
-        productos, many=True, context={'request': request}
-    )
-    return Response(serializer.data)
 
 
 @api_view(['POST'])
@@ -490,20 +485,22 @@ class KardexViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, EsDuenioDelKardex]
 
     def get_queryset(self):
+        # NOTA: antes existían dos "get_queryset" en esta clase — Python se
+        # queda con el último y el primero (que sí filtraba por dueño) nunca
+        # se ejecutaba. Eso hacía que /api/kardex/ devolviera el inventario
+        # de TODOS los artesanos en vez de solo el del usuario autenticado.
         usuario_actual = get_usuario_actual(self.request)
         if usuario_actual is None:
             return Kardex.objects.none()
-        return Kardex.objects.filter(producto__artesano_id=usuario_actual.id)
 
-    def get_queryset(self):
-        qs = super().get_queryset()
+        qs = Kardex.objects.filter(
+            producto__artesano_id=usuario_actual.id
+        ).select_related('producto')
+
         producto_id = self.request.query_params.get('producto')
-        artesano_id = self.request.query_params.get('artesano')
         if producto_id:
             qs = qs.filter(producto_id=producto_id)
-        if artesano_id:
-            qs = qs.filter(producto__artesano_id=artesano_id)
-        return qs
+        return qs.order_by('-fecha')
 
     def perform_create(self, serializer):
         kardex = serializer.save()
@@ -537,7 +534,7 @@ def _kardex_filtrado(request, artesano_id):
     """Devuelve el Kardex del artesano dado, aplicando filtros de fecha."""
     desde = request.query_params.get('desde')
     hasta = request.query_params.get('hasta')
-    qs = Kardex.objects.filter(producto__artesano_id=artesano_id).order_by('fecha')
+    qs = Kardex.objects.filter(producto__artesano_id=artesano_id).select_related('producto').order_by('fecha')
     if desde:
         qs = qs.filter(fecha__date__gte=desde)
     if hasta:
@@ -825,6 +822,7 @@ def _pedidos_con_guia(usuario_actual, artesano_id):
         Pedido.objects
         .filter(artesano_id=artesano_id or usuario_actual.id)
         .exclude(numero_guia__isnull=True).exclude(numero_guia='')
+        .select_related('cliente')
         .prefetch_related('detalles__producto')
         .order_by('-fecha_envio', '-fecha')
     )
@@ -1016,7 +1014,17 @@ class ResenaViewSet(viewsets.ModelViewSet):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo(request):
-    productos = Producto.objects.filter(visible=True)
+    productos = Producto.objects.filter(visible=True).select_related('categoria', 'artesano')
+
+    # Límite opcional (ej. la página de inicio solo necesita 3 "destacados"
+    # y antes traía el catálogo completo solo para mostrar tres).
+    limite = request.query_params.get('limit')
+    if limite:
+        try:
+            productos = productos[:max(1, int(limite))]
+        except ValueError:
+            pass
+
     serializer = CatalogoProductoSerializer(productos, many=True, context={'request': request})
     return Response(serializer.data)
 

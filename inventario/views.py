@@ -155,7 +155,7 @@ def pedidos_cliente(request, cliente_id):
 
     pedidos = Pedido.objects.filter(
         cliente_id=cliente_id
-    ).prefetch_related('detalles__producto')
+    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 
@@ -172,7 +172,7 @@ def pedidos_artesano(request, artesano_id):
 
     pedidos = Pedido.objects.filter(
         artesano_id=artesano_id
-    ).prefetch_related('detalles__producto')
+    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 

@@ -28,13 +28,11 @@ class UsuarioSerializer(serializers.ModelSerializer):
 
     def get_categoria_id(self, obj):
         """Devuelve el id de la categoría del artesano (si existe)."""
-        if obj.tipo == 'artesano' and hasattr(obj, 'categoria'):
-            return obj.categoria.id
-        return None
+        return obj.categoria_id if obj.tipo == 'artesano' else None
 
     def get_categoria_nombre(self, obj):
         """Devuelve el nombre de la categoría del artesano (si existe)."""
-        if obj.tipo == 'artesano' and hasattr(obj, 'categoria'):
+        if obj.tipo == 'artesano' and obj.categoria_id:
             return obj.categoria.nombre
         return None
 
@@ -68,15 +66,10 @@ class RegistroArtesanoSerializer(serializers.ModelSerializer):
         }
 
     def validate_categoria_id(self, value):
-        try:
-            cat = Categoria.objects.get(pk=value)
-        except Categoria.DoesNotExist:
+        # Ya NO se valida exclusividad: varios artesanos pueden compartir la
+        # misma categoría (ej. varios en "Arte en Telas").
+        if not Categoria.objects.filter(pk=value).exists():
             raise serializers.ValidationError('La categoría seleccionada no existe.')
-        if cat.artesano is not None:
-            raise serializers.ValidationError(
-                'Esa categoría ya está asignada a otro artesano. '
-                'Contacta al administrador para crear una nueva.'
-            )
         return value
 
     def create(self, validated_data):
@@ -85,22 +78,18 @@ class RegistroArtesanoSerializer(serializers.ModelSerializer):
         validated_data['tipo'] = 'artesano'
         categoria = Categoria.objects.get(pk=categoria_id)
         validated_data['especialidad'] = categoria.nombre
-        artesano = super().create(validated_data)
-        Categoria.objects.filter(pk=categoria_id).update(artesano=artesano)
-        return artesano
+        validated_data['categoria'] = categoria
+        return super().create(validated_data)
 
 class CategoriaSerializer(serializers.ModelSerializer):
-    artesano_nombre = serializers.CharField(source='artesano.nombre', read_only=True)
-    disponible      = serializers.SerializerMethodField()
+    cantidad_artesanos = serializers.SerializerMethodField()
 
     class Meta:
         model  = Categoria
-        fields = ['id', 'nombre', 'descripcion', 'artesano', 'artesano_nombre', 'disponible']
-        extra_kwargs = {'artesano': {'read_only': True}}  # solo el admin la asigna
+        fields = ['id', 'nombre', 'descripcion', 'cantidad_artesanos']
 
-    def get_disponible(self, obj):
-        """True si la categoría no tiene artesano asignado todavía."""
-        return obj.artesano is None
+    def get_cantidad_artesanos(self, obj):
+        return obj.artesanos.count()
 
 
 class ProductoSerializer(serializers.ModelSerializer):
