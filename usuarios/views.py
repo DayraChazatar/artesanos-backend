@@ -64,7 +64,7 @@ def _foto_url(usuario):
     foto = usuario.foto
     return str(foto) if foto and str(foto).startswith('http') else ''
 
-    # ── Permiso: solo el artesano dueño puede editar/borrar su producto ─────────
+# ── Permiso: solo el artesano dueño puede editar/borrar su producto ─────────
 class EsDuenioDelProducto(BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:  # GET, HEAD, OPTIONS: cualquiera puede ver
@@ -85,17 +85,6 @@ class EsElMismoUsuario(BasePermission):
     def has_object_permission(self, request, view, obj):
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and usuario_actual.id == obj.id
-
-# ── Helper: obtener el Usuario real detrás del token ────────────────────────
-def get_usuario_actual(request):
-    """
-    Devuelve el objeto Usuario correspondiente a quien está autenticado,
-    o None si no se encuentra (no debería pasar si el token es válido).
-    """
-    try:
-        return Usuario.objects.get(correo=request.user.username)
-    except Usuario.DoesNotExist:
-        return None
 
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
@@ -170,14 +159,15 @@ def login(request):
                 'success': True,
                 'id':      usuario.id,
                 'nombre':  usuario.nombre,
+                'correo':  usuario.correo,
                 'tipo':    usuario.tipo,
+                'foto':    usuario.foto or None,
                 'token':   token.key,
                 'foto_url': _foto_url(usuario),
             })
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
-
 
 # ── Login con Google ───────────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.getenv(
@@ -1245,9 +1235,9 @@ def toggle_visibilidad(request, producto_id):
 @permission_classes([IsAuthenticated])
 def perfil_artesano(request, usuario_id):
     try:
-        usuario = Usuario.objects.get(pk=usuario_id, tipo='artesano')
+        usuario = Usuario.objects.get(pk=usuario_id)
     except Usuario.DoesNotExist:
-        return Response({'error': 'Artesano no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
     usuario_actual = get_usuario_actual(request)
     if usuario_actual is None or usuario_actual.id != usuario.id:
