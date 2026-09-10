@@ -1,8 +1,10 @@
 # inventario/views.py
+import hashlib
 import os
 
 from datetime import date
-from .models import Pedido, DetallePedido, Kardex, Devolucion
+import uuid
+from .models import Pedido, DetallePedido, Kardex, Devolucion, Favorito
 
 
 from django.shortcuts import get_object_or_404
@@ -14,8 +16,6 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
-
-from .models import Pedido, DetallePedido, Kardex, Favorito
 
 from usuarios.views import get_usuario_actual
 from .serializers import (
@@ -155,7 +155,7 @@ def pedidos_cliente(request, cliente_id):
 
     pedidos = Pedido.objects.filter(
         cliente_id=cliente_id
-    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
+    ).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 
@@ -172,7 +172,7 @@ def pedidos_artesano(request, artesano_id):
 
     pedidos = Pedido.objects.filter(
         artesano_id=artesano_id
-    ).select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
+    ).prefetch_related('detalles__producto')
     return Response(PedidoSerializer(pedidos, many=True, context={'request': request}).data)
 
 
@@ -317,7 +317,7 @@ def cambiar_estado(request):
                     }
                 )
 
-# Actualizar devolución cuando el artesano responde
+            # Actualizar devolución cuando el artesano responde
             if estado_nuevo == 'Devolucion aprobada':
                 Devolucion.objects.filter(pedido=pedido).update(
                     estado='Aprobada',
