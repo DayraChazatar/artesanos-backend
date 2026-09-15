@@ -18,7 +18,10 @@ from django.conf import settings as django_settings
 from django.db.models import Sum, F
 from django.http import HttpResponse
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image as XLImage
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -465,18 +468,40 @@ def asignar_categoria_productos(request):
 # ── Carga masiva de productos por Excel ─────────────────────────────────────
 # El artesano descarga una plantilla, la llena con varios productos y la
 # vuelve a subir — evita tener que crear cada producto uno por uno a mano.
+
+# Mismos nombres de color que reconoce el formulario manual (ModuloProductos.tsx,
+# COLOR_MAP). Si el artesano escribe un color que no está aquí, igual se
+# guarda —con un tono neutro— y se avisa, sin bloquear la fila.
+COLORES_CONOCIDOS = {
+    'rojo': '#ff0000', 'verde': '#00ff00', 'azul': '#0000ff',
+    'amarillo': '#ffff00', 'naranja': '#ffa500', 'morado': '#800080',
+    'rosado': '#ffc0cb', 'café': '#a52a2a', 'gris': '#808080',
+    'negro': '#000000', 'blanco': '#ffffff', 'dorado': '#c8a96e',
+}
+COLOR_DESCONOCIDO_HEX = '#cccccc'
+
 COLUMNAS_CARGA_MASIVA = [
-    'nombre', 'precio_neto', 'iva', 'cantidad',
-    'stock_minimo', 'stock_maximo', 'precio_pvp',
+    'nombre', 'precio_neto', 'iva', 'cantidad', 'stock_minimo',
+    'stock_maximo', 'precio_pvp', 'descuento_pct', 'colores', 'tallas',
 ]
+# Los únicos campos que de verdad no pueden faltar — el resto son opcionales.
+CAMPOS_OBLIGATORIOS_CARGA_MASIVA = ['nombre', 'precio_neto', 'iva', 'cantidad', 'stock_minimo']
+IVA_VALIDOS = (0, 5, 19)  # las únicas tasas que existen en Colombia y que el modelo Producto acepta
 MAX_FILAS_CARGA_MASIVA = 500
+RUTA_LOGO_PLANTILLA = os.path.join(django_settings.BASE_DIR, 'static', 'branding', 'logo.png')
+# La plantilla tiene un encabezado de marca arriba (logo, título, lema,
+# subtítulo) antes de llegar a la fila de nombres de columna — los datos
+# reales empiezan justo después de esa fila. Si cambia el diseño de
+# plantilla_carga_masiva, esta constante debe cambiar con él.
+FILA_ENCABEZADO_PLANTILLA = 5
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def plantilla_carga_masiva(request):
-    """Devuelve un archivo Excel en blanco (con encabezados y una fila de
-    ejemplo) para que el artesano lo llene y lo vuelva a subir."""
+    """Devuelve el Excel en blanco (con la marca de Pakari Shop, ayuda por
+    columna y una fila de ejemplo) para que el artesano lo llene y lo
+    vuelva a subir."""
     usuario_actual = get_usuario_actual(request)
     if usuario_actual is None or usuario_actual.tipo != 'artesano':
         return Response({'error': 'Solo un artesano puede descargar la plantilla.'}, status=status.HTTP_403_FORBIDDEN)
@@ -485,38 +510,125 @@ def plantilla_carga_masiva(request):
     ws = wb.active
     ws.title = 'Productos'
 
-    encabezados = [
-        'nombre*', 'precio_neto*', 'iva (0, 5 o 19)*', 'cantidad*',
-        'stock_minimo*', 'stock_maximo', 'precio_pvp', 'foto (opcional)',
+    NARANJA = 'B45309'
+    BLANCO = 'FFFFFF'
+
+    # ── Encabezado con marca (logo real + título + lema) ─────────────────
+    ws.merge_cells('A1:K1')
+    ws.merge_cells('A2:K2')
+    ws.row_dimensions[1].height = 34
+    ws.row_dimensions[2].height = 22
+    for fila in (1, 2):
+        for col in range(1, 12):
+            ws.cell(row=fila, column=col).fill = PatternFill('solid', fgColor=NARANJA)
+
+    titulo = ws['A1']
+    titulo.value = '                              Pakari Shop'
+    titulo.font = Font(bold=True, size=20, color=BLANCO)
+    titulo.alignment = Alignment(horizontal='center', vertical='center')
+
+    lema = ws['A2']
+    lema.value = 'Conectando artesanos talentosos con personas que aprecian el trabajo hecho a mano.'
+    lema.font = Font(italic=True, size=11, color=BLANCO)
+    lema.alignment = Alignment(horizontal='center', vertical='center')
+
+    try:
+        logo = XLImage(RUTA_LOGO_PLANTILLA)
+        logo.width = 46
+        logo.height = 44
+        ws.add_image(logo, 'A1')
+    except Exception:
+        pass  # si el logo no está disponible en el servidor, la plantilla se genera igual
+
+    subtitulo = ws['A3']
+    ws.merge_cells('A3:K3')
+    subtitulo.value = 'Plantilla de carga masiva de productos'
+    subtitulo.font = Font(bold=True, size=12, color=NARANJA)
+    subtitulo.alignment = Alignment(horizontal='center')
+    ws.row_dimensions[3].height = 20
+
+    # Nota de instrucciones ANTES de la tabla (no después) — si fuera después
+    # de la fila de ejemplo, una carga con más de unas pocas filas de
+    # productos terminaría escribiendo encima de este texto, o el sistema
+    # confundiría estas celdas con una fila de producto sin datos.
+    ws.merge_cells('A4:K4')
+    nota = ws['A4']
+    nota.value = (
+        '⚠️ BORRA la fila de ejemplo ("Ruana de lana", justo debajo de los encabezados) antes de subir '
+        'el archivo — si la dejas, se crea como un producto real. Los campos con * son obligatorios. '
+        f'La categoría se asigna sola: "{usuario_actual.especialidad or usuario_actual.categoria}". El '
+        'código de barra y el lote también se generan solos — no hace falta escribirlos. Para la foto: '
+        'en Excel, ve a Insertar → Imágenes y colócala dentro de la fila del producto (columna "Foto"), '
+        'una imagen por fila — es opcional. No agregues ni renombres columnas.'
+    )
+    nota.font = Font(italic=True, size=9, color='888888')
+    nota.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws.row_dimensions[4].height = 40
+
+    # ── Encabezados de columnas ───────────────────────────────────────────
+    FILA_ENCABEZADO = FILA_ENCABEZADO_PLANTILLA
+    columnas_info = [
+        ('Nombre',           'Aquí va el nombre del producto.\nEj: Ruana de lana'),
+        ('Precio neto',      'Precio SIN IVA (la base antes de impuestos).\nEj: 85000'),
+        ('IVA',              'Elige el porcentaje de IVA del producto en la lista: 0, 5 o 19.'),
+        ('Cantidad inicial', 'Cuántas unidades hay disponibles ahora mismo.\nEj: 10'),
+        ('Stock mínimo',     'A partir de qué cantidad se considera "stock bajo".\nEj: 2'),
+        ('Stock máximo',     'Opcional. Tope máximo de stock para este producto.\nDeja 0 si no aplica.'),
+        ('Precio PVP',       'Opcional. Precio final de venta al público (con margen incluido).\nSi lo dejas vacío, se calcula solo con el IVA.'),
+        ('Descuento (%)',    'Opcional. Pon el porcentaje de descuento.\nDeja 0 si el producto no tiene descuento.'),
+        ('Colores',          'Opcional. Escribe los colores separados por coma.\nEj: Rojo, Azul, Verde'),
+        ('Tallas',           'Opcional. Escribe las tallas separadas por coma.\nEj: S, M, L  —  o  36, 37, 38'),
+        ('Foto (opcional)',  'Opcional. En Excel: Insertar → Imágenes, y colócala\ndentro de esta fila. Una imagen por fila.'),
     ]
-    ws.append(encabezados)
-    for col_idx in range(1, len(encabezados) + 1):
-        celda = ws.cell(row=1, column=col_idx)
-        celda.font = Font(bold=True, color='FFFFFF')
-        celda.fill = PatternFill('solid', fgColor='B45309')
-        celda.alignment = Alignment(horizontal='center')
-        ws.column_dimensions[celda.column_letter].width = 18
-    ws.column_dimensions['H'].width = 22
-    ws.row_dimensions[2].height = 70  # deja espacio para ver la foto de ejemplo
+    borde_fino = Border(*[Side(style='thin', color='D9D9D9')] * 4)
+    encabezados_obligatorios = {'Nombre', 'Precio neto', 'IVA', 'Cantidad inicial', 'Stock mínimo'}
 
-    # Fila de ejemplo — se puede borrar antes de subir el archivo.
-    ws.append(['Ruana de lana', 85000, 19, 10, 2, 0, 95000, ''])
+    for i, (titulo_col, mensaje) in enumerate(columnas_info, start=1):
+        texto = f'{titulo_col}*' if titulo_col in encabezados_obligatorios else titulo_col
+        celda = ws.cell(row=FILA_ENCABEZADO, column=i, value=texto)
+        celda.font = Font(bold=True, color=BLANCO)
+        celda.fill = PatternFill('solid', fgColor=NARANJA)
+        celda.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        celda.border = borde_fino
+        ws.column_dimensions[get_column_letter(i)].width = 20
 
-    nota = ws.cell(row=4, column=1, value=(
-        '⚠️ BORRA la fila 2 de ejemplo ("Ruana de lana") antes de subir el archivo — si la dejas, '
-        'se crea como un producto real. Los campos con * son obligatorios. La categoría se asigna '
-        f'sola: "{usuario_actual.especialidad or usuario_actual.categoria}". El código de barra y '
-        'el lote también se generan solos (igual que al crear un producto uno por uno) — no hace '
-        'falta escribirlos aquí. No agregues ni renombres columnas.'
-    ))
-    nota.font = Font(italic=True, color='888888')
+        # El texto de ayuda sale al pasar el cursor sobre el NOMBRE de la
+        # columna (el encabezado) — no sobre las celdas donde se escribe.
+        dv = DataValidation(
+            type='textLength', operator='greaterThanOrEqual', formula1='0',
+            allow_blank=True, showInputMessage=True, showErrorMessage=False,
+        )
+        dv.promptTitle = titulo_col[:32]
+        dv.prompt = mensaje[:255]
+        dv.add(celda.coordinate)
+        ws.add_data_validation(dv)
 
-    nota_foto = ws.cell(row=5, column=1, value=(
-        'Para la foto: en Excel, ve a Insertar → Imágenes y colócala DENTRO de la fila '
-        'del producto (columna "foto"), una imagen por fila. Es opcional — si no le pones '
-        'foto, el producto se crea igual y se le puede agregar después desde "Editar".'
-    ))
-    nota_foto.font = Font(italic=True, color='888888')
+    ws.column_dimensions['K'].width = 24
+    ws.row_dimensions[FILA_ENCABEZADO].height = 30
+
+    # ── Fila de ejemplo (datos coherentes: mínimo 2, máximo 20) ───────────
+    FILA_EJEMPLO = FILA_ENCABEZADO + 1
+    ejemplo = ['Ruana de lana', 85000, 19, 10, 2, 20, 95000, 0, 'Rojo, Azul', 'S, M, L', '']
+    for i, valor in enumerate(ejemplo, start=1):
+        c = ws.cell(row=FILA_EJEMPLO, column=i, value=valor)
+        c.border = borde_fino
+        c.alignment = Alignment(horizontal='center')
+    ws.row_dimensions[FILA_EJEMPLO].height = 60  # espacio para ver una foto de ejemplo
+
+    for f in range(FILA_EJEMPLO + 1, FILA_EJEMPLO + 6):
+        for i in range(1, len(columnas_info) + 1):
+            ws.cell(row=f, column=i).border = borde_fino
+        ws.row_dimensions[f].height = 40
+
+    # Lista desplegable real para IVA — evita errores de digitación.
+    ultima_fila = FILA_EJEMPLO + 500
+    dv_iva = DataValidation(type='list', formula1='"0,5,19"', allow_blank=True, showErrorMessage=True)
+    dv_iva.error = 'El IVA debe ser 0, 5 o 19.'
+    dv_iva.errorTitle = 'Valor no válido'
+    dv_iva.add(f'C{FILA_ENCABEZADO + 1}:C{ultima_fila}')
+    ws.add_data_validation(dv_iva)
+
+    ws.freeze_panes = f'A{FILA_ENCABEZADO + 1}'
 
     response = HttpResponse(
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -547,13 +659,11 @@ def _bytes_de_imagen_embebida(img):
 @permission_classes([IsAuthenticated])
 def carga_masiva_productos(request):
     """Crea varios productos a la vez a partir del Excel de la plantilla.
-    Cada fila se valida igual que si el producto se creara a mano (mismo
-    ProductoSerializer); una fila con error no bloquea a las demás — al
-    final se informa qué se creó y qué falló, y por qué. Si la fila trae
-    una foto insertada en la columna "foto", se sube igual que si se
-    subiera desde el formulario normal. El código de barra y el lote se
-    generan solos, igual que en el formulario manual — el artesano no los
-    escribe."""
+    Cada fila se valida de forma independiente — una fila con error NO
+    bloquea a las demás; al final se informa qué se creó, qué falló (y por
+    qué) y qué quedó con un aviso menor (ej. un color no reconocido, o una
+    foto que no se pudo subir). El código de barra y el lote se generan
+    solos, igual que en el formulario manual — el artesano no los escribe."""
     import uuid
     import time
     import random
@@ -572,7 +682,7 @@ def carga_masiva_productos(request):
     except Exception:
         return Response({'error': 'El archivo no es un Excel válido (.xlsx). Usa la plantilla descargada.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    filas = list(ws.iter_rows(min_row=2, max_col=len(COLUMNAS_CARGA_MASIVA), values_only=True))
+    filas = list(ws.iter_rows(min_row=FILA_ENCABEZADO_PLANTILLA + 1, max_col=len(COLUMNAS_CARGA_MASIVA), values_only=True))
     if len(filas) > MAX_FILAS_CARGA_MASIVA:
         return Response({'error': f'Máximo {MAX_FILAS_CARGA_MASIVA} productos por carga.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -590,32 +700,92 @@ def carga_masiva_productos(request):
     errores = []
     avisos = []
 
-    for idx, fila in enumerate(filas, start=2):
+    for idx, fila in enumerate(filas, start=FILA_ENCABEZADO_PLANTILLA + 1):
         if fila is None or all(c is None or str(c).strip() == '' for c in fila):
-            continue  # fila vacía (ej. la nota al pie de la plantilla) — se ignora
+            continue  # fila vacía (ej. las notas al pie de la plantilla) — se ignora
 
         valores = dict(zip(COLUMNAS_CARGA_MASIVA, fila))
         nombre = str(valores.get('nombre') or '').strip()
 
+        # 1) Campos obligatorios presentes — antes de intentar nada más, para
+        #    poder decir exactamente cuáles faltan en vez de un error genérico.
+        faltantes = [c for c in CAMPOS_OBLIGATORIOS_CARGA_MASIVA if valores.get(c) in (None, '')]
+        if faltantes:
+            errores.append({'fila': idx, 'nombre': nombre or '(sin nombre)', 'error': f'Faltan campos obligatorios: {", ".join(faltantes)}.'})
+            continue
+
+        # 2) IVA: solo las 3 tasas reales que acepta el sistema.
+        try:
+            iva = int(valores['iva'])
+        except (TypeError, ValueError):
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'El IVA debe ser un número: 0, 5 o 19.'})
+            continue
+        if iva not in IVA_VALIDOS:
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'El IVA debe ser 0, 5 o 19.'})
+            continue
+
+        # 3) Cantidad inicial > 0 — igual que exige el formulario manual al
+        #    crear un producto nuevo (no tiene sentido registrar 0 unidades).
+        try:
+            cantidad = int(valores['cantidad'])
+        except (TypeError, ValueError):
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'La cantidad inicial debe ser un número.'})
+            continue
+        if cantidad <= 0:
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'La cantidad inicial debe ser mayor a 0.'})
+            continue
+
+        # 4) Descuento: 0 = sin descuento, o un porcentaje entre 1 y 99.
+        descuento_valor = valores.get('descuento_pct')
+        try:
+            descuento_pct = int(descuento_valor) if descuento_valor not in (None, '') else 0
+        except (TypeError, ValueError):
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'El descuento debe ser un número entre 0 y 99.'})
+            continue
+        if not (0 <= descuento_pct <= 99):
+            errores.append({'fila': idx, 'nombre': nombre, 'error': 'El descuento debe estar entre 0 y 99.'})
+            continue
+
+        # 5) Colores: nombres separados por coma. Uno que no se reconozca NO
+        #    bloquea la fila — se guarda con un tono neutro y se avisa aparte.
+        colores = []
+        texto_colores = str(valores.get('colores') or '').strip()
+        if texto_colores:
+            for nombre_color in [c.strip() for c in texto_colores.split(',') if c.strip()]:
+                hex_color = COLORES_CONOCIDOS.get(nombre_color.lower())
+                if hex_color is None:
+                    hex_color = COLOR_DESCONOCIDO_HEX
+                    avisos.append({'fila': idx, 'nombre': nombre, 'mensaje': f'El color "{nombre_color}" no se reconoce; se guardó con un tono neutro.'})
+                colores.append({'hex': hex_color, 'nombre': nombre_color})
+
+        # 6) Tallas: separadas por coma, texto libre (S/M/L o numéricas).
+        texto_tallas = str(valores.get('tallas') or '').strip()
+        tallas = [t.strip() for t in texto_tallas.split(',') if t.strip()] if texto_tallas else []
+
         try:
             data = {
-                'nombre':        nombre,
-                'precio_neto':   valores.get('precio_neto'),
-                'iva':           int(valores['iva']) if valores.get('iva') not in (None, '') else 0,
-                'cantidad':      valores.get('cantidad') or 0,
-                'stock_minimo':  valores.get('stock_minimo') or 0,
-                'stock_maximo':  valores.get('stock_maximo') or 0,
-                'precio_pvp':    valores.get('precio_pvp') or None,
+                'nombre':          nombre,
+                'precio_neto':     valores.get('precio_neto'),
+                'iva':             iva,
+                'cantidad':        cantidad,
+                'stock_minimo':    valores.get('stock_minimo') or 0,
+                'stock_maximo':    valores.get('stock_maximo') or 0,
+                'precio_pvp':      valores.get('precio_pvp') or None,
+                'descuento':       descuento_pct > 0,
+                'valor_descuento': descuento_pct,
+                'colores':         colores,
+                'maneja_tallas':   len(tallas) > 0,
+                'tallas':          tallas,
                 # Igual que en el formulario manual: el artesano no los
                 # escribe, se generan solos (con la fila incluida para que
                 # no choquen entre sí dentro de la misma carga).
-                'codigo_barra':  f"PROD-{int(time.time() * 1000) % 1_000_000:06d}{idx:02d}{random.randint(0, 9)}",
-                'lote':          f"{datetime.now():%Y%m}-{int(time.time() * 1000) % 10000:04d}{idx:02d}",
-                'artesano':      usuario_actual.id,
+                'codigo_barra':    f"PROD-{int(time.time() * 1000) % 1_000_000:06d}{idx:02d}{random.randint(0, 9)}",
+                'lote':            f"{datetime.now():%Y%m}-{int(time.time() * 1000) % 10000:04d}{idx:02d}",
+                'artesano':        usuario_actual.id,
                 # La categoría siempre es la propia del artesano — no tiene
                 # sentido pedirle que la escriba a mano en el Excel.
-                'categoria':     usuario_actual.categoria_id,
-                'visible':       True,
+                'categoria':       usuario_actual.categoria_id,
+                'visible':         True,
             }
         except (TypeError, ValueError) as e:
             errores.append({'fila': idx, 'nombre': nombre, 'error': f'Dato inválido: {e}'})
