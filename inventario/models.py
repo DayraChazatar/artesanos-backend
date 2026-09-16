@@ -77,6 +77,29 @@ class Pedido(models.Model):
     )
 
     # ─────────────────────────────────────────
+    # MÉTODO DE PAGO
+    # ─────────────────────────────────────────
+
+    METODO_PAGO_CHOICES = (
+        ('wompi', 'Wompi'),
+        ('transferencia', 'Transferencia directa'),
+    )
+    metodo_pago = models.CharField(
+        max_length=20,
+        choices=METODO_PAGO_CHOICES,
+        default='wompi',
+    )
+
+    # Foto del comprobante que sube el cliente cuando el método es
+    # "transferencia directa" — el artesano la revisa y confirma el pago
+    # a mano con un botón en su panel (no hay ninguna pasarela de por medio).
+    comprobante_url = models.CharField(
+        max_length=500,
+        null=True,
+        blank=True,
+    )
+
+    # ─────────────────────────────────────────
     # GUÍA Y ENVÍO
     # ─────────────────────────────────────────
 
@@ -86,9 +109,12 @@ class Pedido(models.Model):
         blank=True
     )
 
+    # Sin valor por defecto a propósito: no se trabaja con ninguna
+    # transportadora real ni inventada — el campo queda vacío salvo que en
+    # algún momento se decida usarlo para anotar algo puntual.
     transportadora = models.CharField(
         max_length=100,
-        default='Pakari Express',
+        default='',
         blank=True
     )
 

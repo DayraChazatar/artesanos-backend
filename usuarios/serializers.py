@@ -87,10 +87,14 @@ class ArtesanoPublicoSerializer(serializers.ModelSerializer):
     biografía: solo lo que tiene sentido mostrar a otros usuarios."""
     foto_url         = serializers.SerializerMethodField()
     categoria_nombre = serializers.SerializerMethodField()
+    # Solo dice SI el artesano tiene pago directo configurado — nunca el
+    # número de cuenta ni el titular (eso solo se revela en el pedido ya
+    # creado, no en este listado público de artesanos).
+    tiene_pago_directo = serializers.BooleanField(read_only=True)
 
     class Meta:
         model  = Usuario
-        fields = ['id', 'nombre', 'especialidad', 'foto_url', 'categoria', 'categoria_nombre']
+        fields = ['id', 'nombre', 'especialidad', 'foto_url', 'categoria', 'categoria_nombre', 'tiene_pago_directo']
 
     def get_foto_url(self, obj):
         if not obj.foto:

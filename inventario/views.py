@@ -16,6 +16,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from usuarios.models import Producto, Usuario
+from storage_backend import upload_image
 
 from usuarios.views import get_usuario_actual
 from .serializers import (
@@ -74,6 +75,11 @@ def _reponer_stock(producto: Producto, cantidad: int):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def crear_pedido(request):
+    """Crea UN pedido por cada artesano presente en el carrito — un carrito
+    con productos de 2 artesanos distintos genera 2 pedidos, cada uno solo
+    con los productos (y el total) de ese artesano. Antes se creaba un único
+    pedido que solo quedaba visible para el artesano del primer producto del
+    carrito; el resto del pedido "desaparecía" para los demás."""
     serializer = CrearPedidoSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -93,6 +99,8 @@ def crear_pedido(request):
     if not items:
         return Response({'error': 'El pedido debe contener productos'}, status=status.HTTP_400_BAD_REQUEST)
 
+    metodos_pago = data.get('metodos_pago') or {}
+
     try:
         with transaction.atomic():
             productos_map = {}
@@ -104,40 +112,63 @@ def crear_pedido(request):
                     raise ValueError(f'Producto {pid} no encontrado.')
                 productos_map[pid] = producto
 
-            primer_producto  = productos_map[items[0]['producto_id']]
-            artesano_obj     = getattr(primer_producto, 'artesano', None)
-            total            = sum(item['precio'] * item['cantidad'] for item in items)
-
-            pedido = Pedido.objects.create(
-                cliente   = cliente,
-                artesano  = artesano_obj,
-                estado    = 'Pago pendiente',
-                total     = total,
-                direccion = data.get('direccion', ''),
-                telefono  = data.get('telefono', ''),
-            )
-
+            # Agrupa los items del carrito por artesano, conservando el
+            # orden de llegada (no altera el total ni las cantidades).
+            grupos = {}  # artesano_id (o None) -> [items]
             for item in items:
                 producto = productos_map[item['producto_id']]
-                _reservar_stock(producto, item['cantidad'])
-                registrar_reserva(
-                    producto   = producto,
-                    cantidad   = item['cantidad'],
-                    pedido_ref = pedido.codigo,
-                    creado_por = 'Sistema',
+                artesano_id = producto.artesano_id
+                grupos.setdefault(artesano_id, []).append(item)
+
+            pedidos_creados = []
+            for artesano_id, items_grupo in grupos.items():
+                metodo_pago = metodos_pago.get(str(artesano_id), 'wompi')
+
+                if metodo_pago == 'transferencia':
+                    artesano_obj = Usuario.objects.filter(pk=artesano_id).first()
+                    if artesano_obj is None or not artesano_obj.tiene_pago_directo:
+                        raise ValueError(
+                            'Uno de los artesanos de tu carrito ya no tiene disponible el pago '
+                            'directo — actualiza la página e inténtalo de nuevo.'
+                        )
+                else:
+                    artesano_obj = Usuario.objects.filter(pk=artesano_id).first() if artesano_id else None
+
+                total_grupo = sum(item['precio'] * item['cantidad'] for item in items_grupo)
+
+                pedido = Pedido.objects.create(
+                    cliente      = cliente,
+                    artesano     = artesano_obj,
+                    estado       = 'Pago pendiente',
+                    total        = total_grupo,
+                    direccion    = data.get('direccion', ''),
+                    telefono     = data.get('telefono', ''),
+                    metodo_pago  = metodo_pago,
                 )
-                DetallePedido.objects.create(
-                    pedido   = pedido,
-                    producto = producto,
-                    cantidad = item['cantidad'],
-                    precio   = item['precio'],
-                )
+
+                for item in items_grupo:
+                    producto = productos_map[item['producto_id']]
+                    _reservar_stock(producto, item['cantidad'])
+                    registrar_reserva(
+                        producto   = producto,
+                        cantidad   = item['cantidad'],
+                        pedido_ref = pedido.codigo,
+                        creado_por = 'Sistema',
+                    )
+                    DetallePedido.objects.create(
+                        pedido   = pedido,
+                        producto = producto,
+                        cantidad = item['cantidad'],
+                        precio   = item['precio'],
+                    )
+
+                pedidos_creados.append(pedido)
 
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(
-        PedidoSerializer(pedido, context={'request': request}).data,
+        PedidoSerializer(pedidos_creados, many=True, context={'request': request}).data,
         status=status.HTTP_201_CREATED,
     )
 
@@ -177,7 +208,13 @@ def pedidos_artesano(request, artesano_id):
 
 
 TRANSICIONES_VALIDAS = {
-    # El pago se confirmó (webhook Wompi) → el artesano acepta el pedido
+    # Pago por transferencia directa: el cliente puede arrepentirse y
+    # cancelar mientras espera, o el artesano confirma que le llegó el pago
+    # (con Wompi esta transición la hace el webhook, no pasa por aquí).
+    'Pago pendiente': ['Pago confirmado', 'Cancelado'],
+
+    # El pago se confirmó (webhook Wompi, o el artesano a mano) → el
+    # artesano acepta el pedido
     'Pago confirmado': ['Pendiente'],
 
     # Cliente puede cancelar solo en Pendiente
@@ -232,9 +269,10 @@ def cambiar_estado(request):
     estado_anterior = pedido.estado
     estado_nuevo    = data['estado_nuevo']
 
-    # Solo el artesano gestiona el despacho/entrega y las devoluciones; el
-    # cliente solo puede cancelar o solicitar una devolución.
-    SOLO_ARTESANO = ('En proceso', 'Enviado', 'Entregado', 'Devolucion aprobada', 'Devolucion rechazada')
+    # Solo el artesano gestiona el despacho/entrega, las devoluciones y la
+    # confirmación manual del pago; el cliente solo puede cancelar o
+    # solicitar una devolución.
+    SOLO_ARTESANO = ('En proceso', 'Enviado', 'Entregado', 'Devolucion aprobada', 'Devolucion rechazada', 'Pago confirmado')
     if estado_nuevo in SOLO_ARTESANO and not es_el_artesano:
         return Response({'error': 'Solo el artesano puede realizar esta acción.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -250,6 +288,16 @@ def cambiar_estado(request):
 
     if estado_nuevo == 'Devolucion solicitada' and estado_anterior != 'Entregado':
         return Response({'error': 'Solo puedes devolver pedidos entregados.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Confirmar "Pago confirmado" desde "Pago pendiente" a mano solo tiene
+    # sentido para pago por transferencia directa (el de Wompi lo confirma
+    # su propio webhook, con la firma verificada — nunca a mano por aquí), y
+    # solo si el cliente ya subió el comprobante.
+    if estado_nuevo == 'Pago confirmado' and estado_anterior == 'Pago pendiente':
+        if pedido.metodo_pago != 'transferencia':
+            return Response({'error': 'El pago de este pedido se confirma automáticamente por Wompi, no a mano.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not pedido.comprobante_url:
+            return Response({'error': 'El cliente todavía no ha subido el comprobante de pago.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── Envío: como no hay integración con ninguna transportadora, el
     # número de guía/ticket lo digita el artesano en la pestaña "Referencias"
@@ -369,6 +417,36 @@ def cambiar_estado(request):
 # Enviado/Entregado de un clic). Ya no aplica: desde la pestaña
 # "Referencias" cada envío requiere su propio número de guía/ticket real,
 # así que no tiene sentido aplicar el mismo cambio a varios pedidos a la vez.
+
+# ─────────────────────────────────────────────────────────────
+# COMPROBANTE DE PAGO (transferencia directa)
+# ─────────────────────────────────────────────────────────────
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def subir_comprobante(request, pedido_id):
+    """El cliente sube la foto del comprobante de su transferencia — el
+    artesano la revisa desde su panel y confirma el pago a mano."""
+    pedido = get_object_or_404(Pedido, pk=pedido_id)
+
+    usuario_actual = get_usuario_actual(request)
+    if usuario_actual is None or usuario_actual.id != pedido.cliente_id:
+        return Response({'error': 'No puedes subir un comprobante para el pedido de otro usuario.'}, status=status.HTTP_403_FORBIDDEN)
+
+    if pedido.metodo_pago != 'transferencia':
+        return Response({'error': 'Este pedido no se paga por transferencia directa.'}, status=status.HTTP_400_BAD_REQUEST)
+    if pedido.estado != 'Pago pendiente':
+        return Response({'error': f'Este pedido ya está en estado "{pedido.estado}".'}, status=status.HTTP_400_BAD_REQUEST)
+
+    archivo = request.FILES.get('comprobante')
+    if not archivo:
+        return Response({'error': 'Debes adjuntar una imagen del comprobante.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    filename = f"{uuid.uuid4()}_{archivo.name}"
+    pedido.comprobante_url = upload_image(archivo, 'comprobantes', filename)
+    pedido.save(update_fields=['comprobante_url'])
+
+    return Response(PedidoSerializer(pedido, context={'request': request}).data)
 
 # ─────────────────────────────────────────────────────────────
 # KARDEX — LISTAR

@@ -35,6 +35,30 @@ class Usuario(models.Model):
         related_name='artesanos',
     )
 
+    # ── Pago directo (transferencia/Nequi) — alternativa a Wompi ────────────
+    # Solo aplica a artesanos. No hay un interruptor aparte que se les pueda
+    # olvidar activar: la opción aparece sola en el checkout en cuanto el
+    # artesano llena estos 4 campos (ver la propiedad tiene_pago_directo).
+    PAGO_DIRECTO_TIPO_CUENTA = (
+        ('Ahorros', 'Ahorros'),
+        ('Corriente', 'Corriente'),
+        ('Nequi', 'Nequi'),
+    )
+    pago_directo_banco = models.CharField(max_length=100, blank=True, default='', verbose_name='Banco (o "Nequi")')
+    pago_directo_tipo_cuenta = models.CharField(max_length=20, choices=PAGO_DIRECTO_TIPO_CUENTA, blank=True, default='')
+    pago_directo_numero = models.CharField(max_length=40, blank=True, default='', verbose_name='Número de cuenta o celular Nequi')
+    pago_directo_titular = models.CharField(max_length=255, blank=True, default='', verbose_name='Nombre del titular de la cuenta')
+
+    @property
+    def tiene_pago_directo(self):
+        """True solo si el artesano llenó los 4 datos — así no queda a medias
+        (ej. banco puesto pero sin número de cuenta) mostrándose como
+        disponible en el checkout de un cliente."""
+        return bool(
+            self.pago_directo_banco and self.pago_directo_tipo_cuenta
+            and self.pago_directo_numero and self.pago_directo_titular
+        )
+
     def __str__(self):
         return f"{self.nombre} ({self.tipo})"
 

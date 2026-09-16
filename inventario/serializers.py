@@ -40,10 +40,35 @@ class PedidoSerializer(serializers.ModelSerializer):
     artesano_nombre = serializers.CharField(source='artesano.nombre', read_only=True, default='')
     devolucion      = DevolucionSerializer(read_only=True)  # ← agregar
 
+    # Datos bancarios del artesano — solo se completan cuando el método de
+    # pago de ESTE pedido es "transferencia" (con Wompi no aplican, y no
+    # tiene sentido exponerlos si no son los que el cliente debe usar).
+    pago_directo_banco       = serializers.SerializerMethodField()
+    pago_directo_tipo_cuenta = serializers.SerializerMethodField()
+    pago_directo_numero      = serializers.SerializerMethodField()
+    pago_directo_titular     = serializers.SerializerMethodField()
+
     def get_cliente_nombre(self, obj):
         nombre = getattr(obj.cliente, 'nombre', '') or ''
         email  = getattr(obj.cliente, 'email',  '') or ''
         return nombre.strip() if nombre.strip() else email
+
+    def _dato_pago_directo(self, obj, campo):
+        if obj.metodo_pago != 'transferencia' or obj.artesano_id is None:
+            return None
+        return getattr(obj.artesano, campo, '') or ''
+
+    def get_pago_directo_banco(self, obj):
+        return self._dato_pago_directo(obj, 'pago_directo_banco')
+
+    def get_pago_directo_tipo_cuenta(self, obj):
+        return self._dato_pago_directo(obj, 'pago_directo_tipo_cuenta')
+
+    def get_pago_directo_numero(self, obj):
+        return self._dato_pago_directo(obj, 'pago_directo_numero')
+
+    def get_pago_directo_titular(self, obj):
+        return self._dato_pago_directo(obj, 'pago_directo_titular')
 
     class Meta:
         model  = Pedido
@@ -55,6 +80,9 @@ class PedidoSerializer(serializers.ModelSerializer):
             'numero_guia', 'transportadora',
             'fecha_envio', 'fecha_entrega',
             'devolucion',
+            'metodo_pago', 'comprobante_url',
+            'pago_directo_banco', 'pago_directo_tipo_cuenta',
+            'pago_directo_numero', 'pago_directo_titular',
         ]
         read_only_fields = ['id', 'codigo', 'fecha', 'updated']
 
@@ -70,6 +98,14 @@ class CrearPedidoSerializer(serializers.Serializer):
     items      = CrearDetallePedidoSerializer(many=True)
     direccion  = serializers.CharField(required=False, allow_blank=True, default='')
     telefono   = serializers.CharField(required=False, allow_blank=True, default='')
+    # Mapa "id del artesano" (como texto) → 'wompi' | 'transferencia'. El
+    # carrito se divide en un pedido por artesano (ver crear_pedido), y cada
+    # uno puede pagarse con un método distinto. Si un artesano no aparece
+    # aquí, se usa Wompi por defecto.
+    metodos_pago = serializers.DictField(
+        child=serializers.ChoiceField(choices=['wompi', 'transferencia']),
+        required=False, default=dict,
+    )
 
 
 class CambiarEstadoSerializer(serializers.Serializer):
