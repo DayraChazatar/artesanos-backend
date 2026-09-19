@@ -34,6 +34,7 @@ from .services import (
     registrar_venta,
     registrar_cancelacion,
     registrar_devolucion,
+    notificar,
 )
 
 
@@ -161,6 +162,19 @@ def crear_pedido(request):
                         cantidad = item['cantidad'],
                         precio   = item['precio'],
                     )
+
+                notificar(
+                    artesano_obj,
+                    tipo='pedido',
+                    titulo=f'🛍️ Nuevo pedido {pedido.codigo}',
+                    detalle=(
+                        f'{cliente.nombre} hizo un pedido por ${total_grupo:,.0f} '
+                        f'({"transferencia directa" if metodo_pago == "transferencia" else "pago con Wompi"}). '
+                        f'Queda en "Pago pendiente" hasta que se confirme el pago.'
+                    ),
+                    ruta='/pedidos',
+                    referencia_id=pedido.id,
+                )
 
                 pedidos_creados.append(pedido)
 
@@ -391,7 +405,16 @@ def cambiar_estado(request):
 
             pedido.save()
             pedido.refresh_from_db()
-            print(f">>> GUIA: {pedido.numero_guia}")
+
+            if estado_nuevo == 'Devolucion solicitada':
+                notificar(
+                    pedido.artesano,
+                    tipo='pedido',
+                    titulo=f'↩️ Solicitud de devolución {pedido.codigo}',
+                    detalle=f'{pedido.cliente.nombre} solicitó devolver este pedido. Revisa el motivo y responde.',
+                    ruta='/pedidos',
+                    referencia_id=pedido.id,
+                )
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -445,6 +468,15 @@ def subir_comprobante(request, pedido_id):
     filename = f"{uuid.uuid4()}_{archivo.name}"
     pedido.comprobante_url = upload_image(archivo, 'comprobantes', filename)
     pedido.save(update_fields=['comprobante_url'])
+
+    notificar(
+        pedido.artesano,
+        tipo='pedido',
+        titulo=f'🧾 Comprobante recibido {pedido.codigo}',
+        detalle=f'{usuario_actual.nombre} subió el comprobante de su transferencia. Revísalo y confirma el pago.',
+        ruta='/pedidos',
+        referencia_id=pedido.id,
+    )
 
     return Response(PedidoSerializer(pedido, context={'request': request}).data)
 
@@ -642,12 +674,22 @@ def webhook_wompi(request):
         monto_esperado = int(pedido.total * 100)
         if transaccion.get('amount_in_cents') != monto_esperado:
             return Response(status=status.HTTP_400_BAD_REQUEST)
+        ya_confirmado = pedido.estado == 'Pago confirmado'
         pedido.estado = 'Pago confirmado'
         pedido.save()
+        if not ya_confirmado:
+            notificar(
+                pedido.artesano,
+                tipo='pedido',
+                titulo=f'💰 Pago confirmado {pedido.codigo}',
+                detalle=f'Wompi confirmó el pago de ${pedido.total:,.0f}. Ya puedes preparar el pedido.',
+                ruta='/pedidos',
+                referencia_id=pedido.id,
+            )
     elif transaccion['status'] in ('DECLINED', 'ERROR', 'VOIDED'):
         pedido.estado = 'Cancelado'
         pedido.save()
-        for detalle in pedido.detallepedido_set.all():
+        for detalle in pedido.detalles.all():
             _liberar_reserva(detalle.producto, detalle.cantidad)
 
     return Response(status=status.HTTP_200_OK)

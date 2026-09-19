@@ -11,6 +11,21 @@ from .models import Kardex
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS INTERNOS
 # ─────────────────────────────────────────────────────────────────────────────
+def notificar(usuario, tipo, titulo, detalle, ruta='', referencia_id=None):
+    """Crea una notificación para un usuario concreto (no hace nada si no hay usuario)."""
+    if usuario is None:
+        return
+    from usuarios.models import Notificacion
+    Notificacion.objects.create(
+        usuario=usuario,
+        tipo=tipo,
+        titulo=titulo[:100],
+        detalle=detalle,
+        ruta=ruta,
+        referencia_id=referencia_id,
+    )
+
+
 def _verificar_stock_minimo(producto):
     """Crea notificación si el stock disponible quedó en o bajo el mínimo."""
     from usuarios.models import Notificacion
