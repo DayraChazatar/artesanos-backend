@@ -445,9 +445,13 @@ class ProductoViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def asignar_categoria_productos(request):
-    """Asigna una categoría a una lista de productos."""
+    """Asigna una categoría a una lista de productos propios del artesano autenticado."""
+    usuario = get_usuario_actual(request)
+    if usuario is None or usuario.tipo != 'artesano':
+        return Response({'error': 'Solo un artesano autenticado puede realizar esta acción.'}, status=status.HTTP_403_FORBIDDEN)
+
     categoria_id = request.data.get('categoria_id')
     producto_ids = request.data.get('producto_ids', [])
 
@@ -461,7 +465,8 @@ def asignar_categoria_productos(request):
     except Categoria.DoesNotExist:
         return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    actualizados = Producto.objects.filter(pk__in=producto_ids).update(categoria=categoria)
+    # Solo puede tocar productos que le pertenecen a él — nunca los de otro artesano.
+    actualizados = Producto.objects.filter(pk__in=producto_ids, artesano=usuario).update(categoria=categoria)
     return Response({'ok': True, 'actualizados': actualizados})
 
 
@@ -821,8 +826,9 @@ def carga_masiva_productos(request):
 
 
 # ── Helper notificaciones ─────────────────────────────────────────────────────
-def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta=''):
+def crear_notificacion(tipo, titulo, detalle, referencia_id=None, ruta='', usuario=None):
     Notificacion.objects.create(
+        usuario=usuario,
         tipo=tipo,
         titulo=titulo,
         detalle=detalle,
@@ -860,6 +866,7 @@ class KardexViewSet(viewsets.ModelViewSet):
         producto = kardex.producto
         if producto.cantidad <= producto.stock_minimo:
             crear_notificacion(
+                usuario=producto.artesano,
                 tipo='stock',
                 titulo='Stock bajo',
                 detalle=f'El producto "{producto.nombre}" tiene solo {producto.cantidad} unidades disponibles.',
@@ -1243,13 +1250,20 @@ def reporte_envios_pdf(request):
 
 # ── Notificaciones ────────────────────────────────────────────────────────────
 class NotificacionViewSet(viewsets.ModelViewSet):
-    queryset = Notificacion.objects.all()
+    queryset = Notificacion.objects.all()  # solo para que el router infiera el basename; get_queryset() es lo que realmente se usa
     serializer_class = NotificacionSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        # Cada usuario solo ve sus propias notificaciones — nunca las de otro.
+        usuario = get_usuario_actual(self.request)
+        if usuario is None:
+            return Notificacion.objects.none()
+        return Notificacion.objects.filter(usuario=usuario)
+
     @action(detail=False, methods=['patch'], url_path='leer-todas')
     def leer_todas(self, request):
-        Notificacion.objects.filter(leida=False).update(leida=True)
+        self.get_queryset().filter(leida=False).update(leida=True)
         return Response({'ok': True})
 
     @action(detail=True, methods=['patch'], url_path='leer')
@@ -1261,7 +1275,7 @@ class NotificacionViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='no-leidas')
     def no_leidas(self, request):
-        count = Notificacion.objects.filter(leida=False).count()
+        count = self.get_queryset().filter(leida=False).count()
         return Response({'count': count})
 
 

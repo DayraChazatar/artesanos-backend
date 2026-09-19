@@ -252,6 +252,16 @@ class Notificacion(models.Model):
         ('stock', 'Stock'),
         ('sistema', 'Sistema'),
     ]
+    # Dueño de la notificación. Nullable porque las notificaciones creadas
+    # antes de este campo no tienen usuario asignado; una notificación sin
+    # usuario simplemente no se le muestra a nadie.
+    usuario       = models.ForeignKey(
+        Usuario,
+        on_delete=models.CASCADE,
+        related_name='notificaciones',
+        null=True,
+        blank=True,
+    )
     tipo          = models.CharField(max_length=20, choices=TIPOS)
     titulo        = models.CharField(max_length=100)
     detalle       = models.TextField()

@@ -17,12 +17,14 @@ def _verificar_stock_minimo(producto):
     disponible = producto.cantidad - getattr(producto, 'cantidad_reservada', 0)
     if producto.stock_minimo > 0 and disponible <= producto.stock_minimo:
         ya_existe = Notificacion.objects.filter(
+            usuario=producto.artesano,
             tipo='stock',
             referencia_id=producto.id,
             leida=False,
         ).exists()
         if not ya_existe:
             Notificacion.objects.create(
+                usuario=producto.artesano,
                 tipo='stock',
                 titulo=f'⚠️ Stock mínimo: {producto.nombre}',
                 detalle=f'"{producto.nombre}" tiene {disponible} unidades disponibles, igual o por debajo del mínimo permitido ({producto.stock_minimo}).',
