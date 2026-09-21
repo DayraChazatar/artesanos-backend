@@ -15,7 +15,10 @@ from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
+from django.db import transaction
 from django.db.models import Sum, F
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -34,7 +37,7 @@ from .models import (
     Favorito, Resena, PasswordResetToken,
 )
 from inventario.models import Kardex, Pedido
-from storage_backend import upload_image
+from storage_backend import upload_image, delete_image
 
 # ── Imports de serializers ────────────────────────────────────────────────────
 from .serializers import (
@@ -1433,22 +1436,60 @@ def perfil_artesano(request, usuario_id):
 
     if request.method == 'PATCH':
         import uuid
-        data = request.data.copy()
+        # Solo estos campos se pueden editar desde aquí — nunca el tipo de
+        # cuenta, la categoría ni la contraseña (esa tiene su propio endpoint).
+        campos_editables = (
+            'nombre', 'telefono', 'biografia',
+            'pago_directo_banco', 'pago_directo_tipo_cuenta',
+            'pago_directo_numero', 'pago_directo_titular',
+        )
+        data = {campo: request.data[campo] for campo in campos_editables if campo in request.data}
+
         foto = request.FILES.get('foto')
+        foto_anterior = usuario.foto
+        eliminar_foto = str(request.data.get('eliminar_foto', '')).lower() in ('true', '1')
 
         if foto:
             filename = f"{uuid.uuid4()}_{foto.name}"
-            url = upload_image(foto, 'perfiles', filename)
-            data['foto'] = url
+            data['foto'] = upload_image(foto, 'perfiles', filename)
+        elif eliminar_foto:
+            data['foto'] = None
+
+        # El correo es la identidad de la cuenta (login y recuperación de
+        # contraseña), así que para cambiarlo se pide la contraseña actual.
+        correo_anterior = usuario.correo
+        correo_nuevo = str(request.data.get('correo') or '').strip()
+        if correo_nuevo and correo_nuevo != correo_anterior:
+            try:
+                validate_email(correo_nuevo)
+            except DjangoValidationError:
+                return Response({'error': 'El correo no tiene un formato válido.'}, status=status.HTTP_400_BAD_REQUEST)
+            if Usuario.objects.filter(correo__iexact=correo_nuevo).exclude(pk=usuario.pk).exists():
+                return Response({'error': 'Ese correo ya está registrado por otra cuenta.'}, status=status.HTTP_400_BAD_REQUEST)
+            if not check_password(str(request.data.get('password_actual') or ''), usuario.password):
+                return Response({'error': 'Para cambiar el correo debes escribir tu contraseña actual correcta.'}, status=status.HTTP_400_BAD_REQUEST)
+            data['correo'] = correo_nuevo
 
         serializer = UsuarioSerializer(
             usuario, data=data, partial=True,
             context={'request': request}
         )
-        if serializer.is_valid():
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
             serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            if 'correo' in data:
+                # La sesión (token) está atada a un usuario interno cuyo
+                # username es el correo; hay que renombrarlo o el artesano
+                # quedaría sin acceso a su propia cuenta.
+                User.objects.filter(username=correo_nuevo).delete()  # sobrante de una cuenta ya borrada
+                User.objects.filter(username=correo_anterior).update(username=correo_nuevo)
+
+        if (foto or eliminar_foto) and foto_anterior:
+            delete_image(foto_anterior, 'perfiles')
+
+        return Response(serializer.data)
 
 # ── Cambiar contraseña ────────────────────────────────────────────────────────
 @api_view(['POST'])

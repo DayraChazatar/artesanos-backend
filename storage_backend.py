@@ -50,6 +50,20 @@ def _procesar_imagen(file, max_dimension=MAX_DIMENSION, calidad=CALIDAD_JPEG):
         return file.read(), getattr(file, 'content_type', 'application/octet-stream')
 
 
+def delete_image(url: str, bucket: str) -> None:
+    """Borra de Supabase Storage la imagen a la que apunta `url`. Es de mejor
+    esfuerzo: si falla (o la URL no es del bucket), no interrumpe a quien llama."""
+    try:
+        marcador = f'/{bucket}/'
+        if not url or marcador not in url:
+            return
+        ruta = url.split(marcador, 1)[1].split('?')[0]
+        client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_SERVICE_KEY'))
+        client.storage.from_(bucket).remove([ruta])
+    except Exception:
+        pass
+
+
 def upload_image(file, bucket: str, filename: str) -> str:
     """Sube una imagen a Supabase Storage (ya redimensionada/comprimida) y
     retorna la URL pública."""
