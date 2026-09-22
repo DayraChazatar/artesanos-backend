@@ -1,5 +1,6 @@
 # inventario/views.py
 import hashlib
+import logging
 import os
 
 from datetime import date
@@ -111,6 +112,11 @@ def crear_pedido(request):
                     producto = Producto.objects.select_for_update().get(pk=pid)
                 except Producto.DoesNotExist:
                     raise ValueError(f'Producto {pid} no encontrado.')
+                # Un artesano suspendido no puede seguir recibiendo pedidos,
+                # aunque alguien tenga el enlace directo al producto (ya no
+                # sale en el catálogo, pero esto cierra la puerta trasera).
+                if producto.artesano_id is not None and not producto.artesano.activo:
+                    raise ValueError(f'"{producto.nombre}" ya no está disponible.')
                 productos_map[pid] = producto
 
             # Agrupa los items del carrito por artesano, conservando el
@@ -135,7 +141,14 @@ def crear_pedido(request):
                 else:
                     artesano_obj = Usuario.objects.filter(pk=artesano_id).first() if artesano_id else None
 
-                total_grupo = sum(item['precio'] * item['cantidad'] for item in items_grupo)
+                # El precio SIEMPRE se recalcula aquí a partir del producto,
+                # nunca se confía en el que venga del navegador — si no, un
+                # cliente podría mandar cualquier precio para su propio
+                # carrito y pagar lo que quisiera.
+                total_grupo = sum(
+                    productos_map[item['producto_id']].precio_final * item['cantidad']
+                    for item in items_grupo
+                )
 
                 pedido = Pedido.objects.create(
                     cliente      = cliente,
@@ -160,7 +173,7 @@ def crear_pedido(request):
                         pedido   = pedido,
                         producto = producto,
                         cantidad = item['cantidad'],
-                        precio   = item['precio'],
+                        precio   = producto.precio_final,
                     )
 
                 notificar(
@@ -416,8 +429,11 @@ def cambiar_estado(request):
                     referencia_id=pedido.id,
                 )
 
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception:
+        # El detalle real queda en los logs del servidor para depurar — al
+        # cliente no le sirve (y no debería) ver el texto crudo del error.
+        logging.exception('Error en cambiar_estado')
+        return Response({'error': 'No se pudo actualizar el pedido. Intenta de nuevo.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     primer_detalle  = pedido.detalles.select_related('producto').first()
     stock_actual    = getattr(primer_detalle.producto, 'cantidad', None)          if primer_detalle else None

@@ -113,6 +113,21 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return [IsAuthenticated(), EsElMismoUsuario()]
 
+    def create(self, request, *args, **kwargs):
+        # El registro público solo puede crear cliente o artesano, nunca un
+        # admin — sin esto, cualquiera podía mandar "tipo": "admin" en el
+        # registro y quedar con acceso total al panel de administrador.
+        data = request.data.copy()
+        if data.get('tipo') not in ('cliente', 'artesano'):
+            return Response({'error': 'Tipo de cuenta inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+        data.pop('activo', None)  # siempre nace activa, nunca ya suspendida ni forzada
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def get_queryset(self):
         correo = self.request.query_params.get('correo')
         usuario_actual = get_usuario_actual(self.request)
@@ -1403,7 +1418,10 @@ class ResenaViewSet(viewsets.ModelViewSet):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo(request):
-    productos = Producto.objects.filter(visible=True).select_related('categoria', 'artesano')
+    # artesano__activo=True: si un administrador suspende a un artesano, sus
+    # productos dejan de poder comprarse de inmediato — antes seguían
+    # apareciendo en el catálogo como si nada.
+    productos = Producto.objects.filter(visible=True, artesano__activo=True).select_related('categoria', 'artesano')
 
     # Límite opcional (ej. la página de inicio solo necesita 3 "destacados"
     # y antes traía el catálogo completo solo para mostrar tres).
