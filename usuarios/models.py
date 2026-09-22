@@ -10,11 +10,18 @@ class Usuario(models.Model):
     TIPO = (
         ('cliente', 'Cliente'),
         ('artesano', 'Artesano'),
+        # Nunca se puede elegir al registrarse — una cuenta de administrador
+        # solo se crea a mano desde el servidor (Django Admin o consola).
+        ('admin', 'Administrador'),
     )
 
     nombre = models.CharField(max_length=255)
     correo = models.EmailField(unique=True)
     password = models.CharField(max_length=255)
+
+    # Suspender una cuenta la deja sin poder iniciar sesión ni usar la app,
+    # sin necesidad de borrar sus datos (pedidos, productos, etc.).
+    activo = models.BooleanField(default=True, verbose_name='Cuenta activa')
 
     # Campos opcionales (solo para artesano)
     telefono = models.CharField(max_length=20, blank=True, null=True)

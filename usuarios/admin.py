@@ -17,8 +17,8 @@ class CategoriaAdmin(admin.ModelAdmin):
 
 @admin.register(Usuario)
 class UsuarioAdmin(admin.ModelAdmin):
-    list_display = ['nombre', 'correo', 'tipo', 'telefono', 'categoria']
-    list_filter = ['tipo', 'categoria']
+    list_display = ['nombre', 'correo', 'tipo', 'activo', 'telefono', 'categoria']
+    list_filter = ['tipo', 'activo', 'categoria']
     search_fields = ['nombre', 'correo']
 
 @admin.register(Notificacion)

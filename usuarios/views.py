@@ -16,7 +16,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from django.db import transaction
-from django.db.models import Sum, F
+from django.db.models import Sum, F, Q
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
@@ -56,10 +56,12 @@ from .serializers import (
 def get_usuario_actual(request):
     """
     Devuelve el objeto Usuario correspondiente a quien está autenticado,
-    o None si no se encuentra (no debería pasar si el token es válido).
+    o None si no se encuentra (no debería pasar si el token es válido) o si
+    la cuenta fue suspendida — así una suspensión bloquea de inmediato
+    cualquier acción, no solo el próximo inicio de sesión.
     """
     try:
-        return Usuario.objects.get(correo=request.user.username)
+        return Usuario.objects.get(correo=request.user.username, activo=True)
     except Usuario.DoesNotExist:
         return None
 
@@ -91,6 +93,12 @@ class EsElMismoUsuario(BasePermission):
     def has_object_permission(self, request, view, obj):
         usuario_actual = get_usuario_actual(request)
         return usuario_actual is not None and usuario_actual.id == obj.id
+
+# ── Permiso: solo una cuenta de administrador ────────────────────────────────
+class EsAdmin(BasePermission):
+    def has_permission(self, request, view):
+        usuario_actual = get_usuario_actual(request)
+        return usuario_actual is not None and usuario_actual.tipo == 'admin'
 
 # ── Usuarios ──────────────────────────────────────────────────────────────────
 class UsuarioViewSet(viewsets.ModelViewSet):
@@ -134,7 +142,16 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         # Permite actualizar la foto de perfil subiendo un archivo real
         # (a Supabase Storage), igual que ya funciona para el artesano —
         # antes el cliente solo la guardaba como base64 en localStorage.
-        data = request.data.copy()
+        #
+        # Solo estos campos se aceptan aquí — antes se pasaba request.data
+        # completo al serializer (fields='__all__'), así que cualquier
+        # usuario autenticado podía editarse a sí mismo "tipo": "admin" o
+        # "activo": true para autoascenderse o quitarse una suspensión. El
+        # correo, la contraseña y los datos de pago directo tienen su propio
+        # endpoint con sus propias validaciones (ver perfil_artesano).
+        campos_editables = ('nombre', 'telefono', 'biografia', 'especialidad')
+        data = {campo: request.data[campo] for campo in campos_editables if campo in request.data}
+
         foto = request.FILES.get('foto')
         if foto:
             import uuid
@@ -157,6 +174,8 @@ def login(request):
     try:
         usuario = Usuario.objects.get(correo=correo)
         if check_password(password, usuario.password):
+            if not usuario.activo:
+                return Response({'success': False, 'mensaje': 'Tu cuenta ha sido suspendida. Contacta al administrador si crees que es un error.'})
             auth_user, _ = User.objects.get_or_create(username=correo)
             auth_user.set_password(password)
             auth_user.save()
@@ -1532,3 +1551,92 @@ def registrar_contacto(request):
         producto_id=request.data.get('producto_id'),
     )
     return Response({'ok': True}, status=201)
+
+
+# ── Panel de administrador ────────────────────────────────────────────────────
+# Todo lo de aquí exige EsAdmin — una cuenta con tipo='admin', que nunca se
+# puede crear desde el registro público (ver `register`/`registro_artesano`),
+# solo a mano desde Django Admin o la consola del servidor.
+
+@api_view(['GET'])
+@permission_classes([EsAdmin])
+def admin_usuarios(request):
+    """Lista de clientes y artesanos (nunca otras cuentas admin) para el
+    panel de administrador, con búsqueda y filtro por tipo."""
+    tipo = request.query_params.get('tipo')
+    q = request.query_params.get('q', '').strip()
+
+    qs = Usuario.objects.filter(tipo__in=['cliente', 'artesano']).select_related('categoria')
+    if tipo in ('cliente', 'artesano'):
+        qs = qs.filter(tipo=tipo)
+    if q:
+        qs = qs.filter(Q(nombre__icontains=q) | Q(correo__icontains=q))
+    qs = qs.order_by('nombre')[:500]
+
+    return Response(UsuarioSerializer(qs, many=True, context={'request': request}).data)
+
+
+@api_view(['PATCH'])
+@permission_classes([EsAdmin])
+def admin_editar_usuario(request, usuario_id):
+    """Un administrador asigna/cambia la categoría de un artesano y
+    suspende/reactiva cuentas. Nada más se puede tocar desde aquí — ni
+    correo, ni contraseña, ni datos de pago directo."""
+    try:
+        usuario = Usuario.objects.get(pk=usuario_id)
+    except Usuario.DoesNotExist:
+        return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    if usuario.tipo not in ('cliente', 'artesano'):
+        return Response({'error': 'No puedes editar otra cuenta de administrador desde aquí.'}, status=status.HTTP_403_FORBIDDEN)
+
+    data = request.data
+    cambios = {}
+
+    if 'activo' in data:
+        nuevo_activo = bool(data['activo'])
+        admin_actual = get_usuario_actual(request)
+        if not nuevo_activo and admin_actual is not None and admin_actual.id == usuario.id:
+            return Response({'error': 'No puedes suspender tu propia cuenta.'}, status=status.HTTP_400_BAD_REQUEST)
+        cambios['activo'] = nuevo_activo
+
+    if 'categoria_id' in data:
+        if usuario.tipo != 'artesano':
+            return Response({'error': 'Solo un artesano puede tener categoría.'}, status=status.HTTP_400_BAD_REQUEST)
+        categoria_id = data['categoria_id']
+        if categoria_id in (None, ''):
+            cambios['categoria'] = None
+        else:
+            try:
+                cambios['categoria'] = Categoria.objects.get(pk=categoria_id)
+            except Categoria.DoesNotExist:
+                return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not cambios:
+        return Response({'error': 'No enviaste ningún cambio válido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    for campo, valor in cambios.items():
+        setattr(usuario, campo, valor)
+    usuario.save()
+
+    return Response(UsuarioSerializer(usuario, context={'request': request}).data)
+
+
+@api_view(['GET'])
+@permission_classes([EsAdmin])
+def admin_pedidos(request):
+    """Vista de solo lectura de todos los pedidos de la plataforma."""
+    from inventario.models import Pedido
+    from inventario.serializers import PedidoSerializer
+
+    estado = request.query_params.get('estado', '').strip()
+    q = request.query_params.get('q', '').strip()
+
+    qs = Pedido.objects.select_related('cliente', 'artesano', 'devolucion').prefetch_related('detalles__producto')
+    if estado:
+        qs = qs.filter(estado=estado)
+    if q:
+        qs = qs.filter(Q(codigo__icontains=q) | Q(cliente__nombre__icontains=q) | Q(artesano__nombre__icontains=q))
+    qs = qs.order_by('-fecha')[:500]
+
+    return Response(PedidoSerializer(qs, many=True, context={'request': request}).data)
