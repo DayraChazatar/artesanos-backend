@@ -682,8 +682,11 @@ def webhook_wompi(request):
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        pedido = Pedido.objects.get(codigo=transaccion['reference'])
-    except Pedido.DoesNotExist:
+        # El frontend manda el ID del pedido como "reference" (no el código
+        # PED-00058) tanto al pedir la firma como en la URL de pago — Wompi
+        # nos devuelve ese mismo valor tal cual en el webhook.
+        pedido = Pedido.objects.get(pk=int(transaccion['reference']))
+    except (Pedido.DoesNotExist, ValueError, TypeError):
         return Response(status=status.HTTP_404_NOT_FOUND)
 
     if transaccion['status'] == 'APPROVED':
@@ -730,8 +733,10 @@ def wompi_integrity(request):
         )
 
     try:
-        pedido = Pedido.objects.get(codigo=referencia)
-    except Pedido.DoesNotExist:
+        # Igual que en el webhook: "reference" es el ID del pedido, no su
+        # código — así lo manda Checkout.tsx en ambos lados.
+        pedido = Pedido.objects.get(pk=int(referencia))
+    except (Pedido.DoesNotExist, ValueError, TypeError):
         return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
     usuario_actual = get_usuario_actual(request)
