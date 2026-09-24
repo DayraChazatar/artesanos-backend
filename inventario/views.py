@@ -36,6 +36,7 @@ from .services import (
     registrar_cancelacion,
     registrar_devolucion,
     notificar,
+    liberar_pedidos_wompi_abandonados,
 )
 
 
@@ -43,21 +44,6 @@ from .services import (
 # HELPERS DE STOCK
 # ─────────────────────────────────────────────────────────────
 
-def _reservar_stock(producto: Producto, cantidad: int):
-    disponible = producto.cantidad - getattr(producto, 'cantidad_reservada', 0)
-    if disponible < cantidad:
-        raise ValueError(
-            f'Stock disponible insuficiente para "{producto.nombre}": '
-            f'disponible {disponible}, solicitado {cantidad}.'
-        )
-    producto.cantidad_reservada = getattr(producto, 'cantidad_reservada', 0) + cantidad
-    producto.save(update_fields=['cantidad_reservada'])
-
-
-def _liberar_reserva(producto: Producto, cantidad: int):
-    producto.cantidad += cantidad
-    producto.cantidad_reservada = max(0, getattr(producto, 'cantidad_reservada', 0) - cantidad)
-    producto.save()
 
 
 def _confirmar_entrega(producto: Producto, cantidad: int):
@@ -100,6 +86,11 @@ def crear_pedido(request):
     items = data['items']
     if not items:
         return Response({'error': 'El pedido debe contener productos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Libera primero el stock de pedidos de Wompi abandonados hace rato — así
+    # el chequeo de disponibilidad de abajo usa números reales, no stock
+    # fantasma reservado por alguien que nunca pagó.
+    liberar_pedidos_wompi_abandonados()
 
     metodos_pago = data.get('metodos_pago') or {}
 
@@ -162,7 +153,11 @@ def crear_pedido(request):
 
                 for item in items_grupo:
                     producto = productos_map[item['producto_id']]
-                    _reservar_stock(producto, item['cantidad'])
+                    # Antes también se llamaba a _reservar_stock() aquí, que
+                    # hacía exactamente lo mismo que registrar_reserva() pero
+                    # sin dejar rastro en el kardex — el resultado era que
+                    # cada pedido reservaba el DOBLE del stock que debía, y
+                    # con poco inventario llegaba a rechazar compras válidas.
                     registrar_reserva(
                         producto   = producto,
                         cantidad   = item['cantidad'],
@@ -706,10 +701,20 @@ def webhook_wompi(request):
                 referencia_id=pedido.id,
             )
     elif transaccion['status'] in ('DECLINED', 'ERROR', 'VOIDED'):
-        pedido.estado = 'Cancelado'
-        pedido.save()
-        for detalle in pedido.detalles.all():
-            _liberar_reserva(detalle.producto, detalle.cantidad)
+        # Si Wompi reintenta este mismo aviso (lo hace), sin este chequeo se
+        # liberaría la reserva una segunda vez — y con el _liberar_reserva()
+        # que se usaba antes, esa segunda vez también inflaba el stock real
+        # (sumaba cantidad a producto.cantidad, no solo liberaba la reserva).
+        if pedido.estado != 'Cancelado':
+            pedido.estado = 'Cancelado'
+            pedido.save()
+            for detalle in pedido.detalles.select_related('producto'):
+                registrar_cancelacion(
+                    producto=detalle.producto,
+                    cantidad=detalle.cantidad,
+                    pedido_ref=pedido.codigo,
+                    creado_por='Sistema (Wompi)',
+                )
 
     return Response(status=status.HTTP_200_OK)
 

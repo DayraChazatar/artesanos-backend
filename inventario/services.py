@@ -3,9 +3,16 @@
 Lógica de negocio para todos los movimientos de inventario.
 Todas las funciones reciben objetos ya validados y retornan el Kardex creado.
 """
-from datetime import date
+from datetime import date, timedelta
 from django.db import transaction
-from .models import Kardex
+from django.utils import timezone
+from .models import Kardex, Pedido
+
+# Un pedido con Wompi que nadie termina de pagar (cierra la pestaña, se
+# arrepiente, etc.) nunca recibe webhook — sin este límite, el stock que
+# reservó quedaría bloqueado para siempre. La transferencia directa no
+# necesita esto: ahí el artesano decide a mano cuándo cancelar.
+MINUTOS_EXPIRACION_WOMPI = 60
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -351,3 +358,41 @@ def registrar_devolucion(*, producto, cantidad, pedido_ref, nota='',
         creado_por= creado_por,
         pedido_ref= pedido_ref,
     )
+
+
+def liberar_pedidos_wompi_abandonados():
+    """Cancela y libera el stock de los pedidos con Wompi que llevan más de
+    MINUTOS_EXPIRACION_WOMPI en "Pago pendiente" sin que llegue confirmación
+    (el cliente cerró la página antes de pagar, o simplemente se arrepintió).
+    Se llama de paso en momentos donde importa que el stock esté al día —
+    antes de reservar uno nuevo, y al mostrar el catálogo — así no hace falta
+    un proceso aparte corriendo todo el tiempo."""
+    limite = timezone.now() - timedelta(minutes=MINUTOS_EXPIRACION_WOMPI)
+    vencidos = Pedido.objects.filter(
+        estado='Pago pendiente', metodo_pago='wompi', fecha__lt=limite,
+    ).select_related('artesano').prefetch_related('detalles__producto')
+
+    for pedido in vencidos:
+        with transaction.atomic():
+            for detalle in pedido.detalles.select_related('producto').select_for_update():
+                registrar_cancelacion(
+                    producto=detalle.producto,
+                    cantidad=detalle.cantidad,
+                    pedido_ref=pedido.codigo,
+                    creado_por='Sistema (expiración automática)',
+                )
+            pedido.estado = 'Cancelado'
+            pedido.save(update_fields=['estado'])
+
+            notificar(
+                pedido.artesano,
+                tipo='pedido',
+                titulo=f'⏳ Pedido {pedido.codigo} cancelado por inactividad',
+                detalle=(
+                    f'El cliente nunca completó el pago con Wompi (más de '
+                    f'{MINUTOS_EXPIRACION_WOMPI} minutos sin confirmación), así '
+                    f'que el pedido se canceló solo y el stock quedó liberado.'
+                ),
+                ruta='/pedidos',
+                referencia_id=pedido.id,
+            )

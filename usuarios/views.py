@@ -1418,6 +1418,12 @@ class ResenaViewSet(viewsets.ModelViewSet):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def catalogo(request):
+    # Libera de paso el stock de pedidos de Wompi abandonados hace rato, para
+    # que la disponibilidad que se muestra aquí sea real y no cuente stock
+    # "fantasma" reservado por alguien que nunca terminó de pagar.
+    from inventario.services import liberar_pedidos_wompi_abandonados
+    liberar_pedidos_wompi_abandonados()
+
     # artesano__activo=True: si un administrador suspende a un artesano, sus
     # productos dejan de poder comprarse de inmediato — antes seguían
     # apareciendo en el catálogo como si nada.
