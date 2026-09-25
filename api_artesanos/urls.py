@@ -34,6 +34,7 @@ from usuarios.views import (
     admin_usuarios,
     admin_editar_usuario,
     admin_pedidos,
+    admin_confirmar_pago_wompi,
 )
 
 router = routers.DefaultRouter()
@@ -76,6 +77,7 @@ urlpatterns = [
     path('api/admin/usuarios/',                              admin_usuarios),
     path('api/admin/usuarios/<int:usuario_id>/',              admin_editar_usuario),
     path('api/admin/pedidos/',                                admin_pedidos),
+    path('api/admin/pedidos/<int:pedido_id>/confirmar-wompi/', admin_confirmar_pago_wompi),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -232,15 +232,16 @@ def pedidos_artesano(request, artesano_id):
 TRANSICIONES_VALIDAS = {
     # Pago por transferencia directa: el cliente puede arrepentirse y
     # cancelar mientras espera, o el artesano confirma que le llegó el pago
-    # (con Wompi esta transición la hace el webhook, no pasa por aquí).
+    # (con Wompi esta transición la hace el webhook, no pasa por aquí). En
+    # cuanto se confirma el pago (por cualquiera de los dos medios), el
+    # código de más abajo lo pasa directo a "En proceso" — ya no se detiene
+    # en "Pago confirmado" ni "Pendiente" pidiendo clics extra.
     'Pago pendiente': ['Pago confirmado', 'Cancelado'],
 
-    # El pago se confirmó (webhook Wompi, o el artesano a mano) → el
-    # artesano acepta el pedido
-    'Pago confirmado': ['Pendiente'],
-
-    # Cliente puede cancelar solo en Pendiente
-    # Artesano acepta → En proceso
+    # Se mantienen por compatibilidad con pedidos viejos que hayan quedado
+    # en alguno de estos dos estados, pero ya no forman parte del flujo
+    # normal para pedidos nuevos.
+    'Pago confirmado': ['Pendiente', 'En proceso'],
     'Pendiente': ['En proceso', 'Cancelado'],
 
     # Artesano prepara → Enviado (se bloquea cancelación)
@@ -320,6 +321,12 @@ def cambiar_estado(request):
             return Response({'error': 'El pago de este pedido se confirma automáticamente por Wompi, no a mano.'}, status=status.HTTP_400_BAD_REQUEST)
         if not pedido.comprobante_url:
             return Response({'error': 'El cliente todavía no ha subido el comprobante de pago.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Al verificar el comprobante, el pedido pasa directo a "En proceso"
+        # (el mismo estado que ya deja registrar la guía en "Referencias") —
+        # antes se quedaba en "Pago confirmado" y exigía otro par de clics
+        # más ("Pendiente" y luego "En proceso") para llegar a ese punto.
+        estado_nuevo = 'En proceso'
 
     # ── Envío: como no hay integración con ninguna transportadora, el
     # número de guía/ticket lo digita el artesano en la pestaña "Referencias"
@@ -688,15 +695,18 @@ def webhook_wompi(request):
         monto_esperado = int(pedido.total * 100)
         if transaccion.get('amount_in_cents') != monto_esperado:
             return Response(status=status.HTTP_400_BAD_REQUEST)
-        ya_confirmado = pedido.estado == 'Pago confirmado'
-        pedido.estado = 'Pago confirmado'
+        # Pasa directo a "En proceso" (listo para que el artesano registre
+        # el envío) — antes se quedaba en "Pago confirmado" y el artesano
+        # todavía tenía que hacer un par de clics más para llegar ahí.
+        ya_confirmado = pedido.estado in ('Pago confirmado', 'En proceso')
+        pedido.estado = 'En proceso'
         pedido.save()
         if not ya_confirmado:
             notificar(
                 pedido.artesano,
                 tipo='pedido',
                 titulo=f'💰 Pago confirmado {pedido.codigo}',
-                detalle=f'Wompi confirmó el pago de ${pedido.total:,.0f}. Ya puedes preparar el pedido.',
+                detalle=f'Wompi confirmó el pago de ${pedido.total:,.0f}. Ya puedes registrar el envío.',
                 ruta='/pedidos',
                 referencia_id=pedido.id,
             )

@@ -1664,3 +1664,44 @@ def admin_pedidos(request):
     qs = qs.order_by('-fecha')[:500]
 
     return Response(PedidoSerializer(qs, many=True, context={'request': request}).data)
+
+
+@api_view(['POST'])
+@permission_classes([EsAdmin])
+def admin_confirmar_pago_wompi(request, pedido_id):
+    """Último recurso: confirma a mano un pedido de Wompi que se quedó
+    atascado en "Pago pendiente" porque el webhook nunca llegó (caída de
+    red, bloqueo, etc.). Esto NO verifica nada con Wompi — el administrador
+    tiene que estar seguro de que el pago sí se hizo antes de usar esto."""
+    from inventario.models import Pedido
+    from inventario.serializers import PedidoSerializer
+    from inventario.services import notificar
+
+    try:
+        with transaction.atomic():
+            pedido = Pedido.objects.select_for_update().get(pk=pedido_id)
+
+            if pedido.metodo_pago != 'wompi':
+                return Response({'error': 'Esta acción es solo para pedidos pagados con Wompi.'}, status=status.HTTP_400_BAD_REQUEST)
+            if pedido.estado != 'Pago pendiente':
+                return Response({'error': f'Este pedido ya está en estado "{pedido.estado}".'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Igual que cuando Wompi confirma solo: pasa directo a "En
+            # proceso", listo para que el artesano registre el envío.
+            pedido.estado = 'En proceso'
+            pedido.save(update_fields=['estado'])
+    except Pedido.DoesNotExist:
+        return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    notificar(
+        pedido.artesano,
+        tipo='pedido',
+        titulo=f'⚠️ Pago confirmado a mano {pedido.codigo}',
+        detalle=(
+            'Un administrador confirmó manualmente el pago de este pedido '
+            '(Wompi no llegó a avisarlo automáticamente). Ya puedes registrar el envío.'
+        ),
+        ruta='/pedidos',
+        referencia_id=pedido.id,
+    )
+    return Response(PedidoSerializer(pedido, context={'request': request}).data)
