@@ -177,3 +177,6 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 datos.json
 datos_utf8.json
+
+# Generado por collectstatic (whitenoise) — no es código fuente
+staticfiles/
