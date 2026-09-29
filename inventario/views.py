@@ -770,4 +770,6 @@ def wompi_integrity(request):
     cadena = f"{referencia}{monto}{moneda}{secreto}"
     firma = hashlib.sha256(cadena.encode()).hexdigest()
 
-    return Response({'signature': firma})
+    # El frontend arma la URL de checkout de Wompi con este monto — sin él,
+    # "amount-in-cents" llega como "undefined" y Wompi rechaza el pago.
+    return Response({'signature': firma, 'amount_in_cents': monto})
