@@ -443,7 +443,10 @@ class ProductoViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         Producto.objects.filter(pk=instance.pk).update(visitas=F('visitas') + 1)
-        instance.refresh_from_db(fields=['visitas'])
+        # Antes se volvía a leer el contador de la base solo para devolverlo;
+        # como la base está lejos del servidor, cada consulta de más cuesta
+        # una vuelta de red completa.
+        instance.visitas += 1
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
         

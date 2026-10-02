@@ -85,6 +85,13 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD'),
         'HOST': os.getenv('DB_HOST'),
         'PORT': os.getenv('DB_PORT'),
+        # Sin esto Django abría una conexión nueva a Supabase (con su
+        # handshake TLS y autenticación) en CADA petición — y como el servidor
+        # y la base de datos están en continentes distintos, eso sumaba más de
+        # un segundo a cada llamada. Con la conexión reutilizada, la
+        # revisión de salud evita usar una que Supabase ya haya cerrado.
+        'CONN_MAX_AGE': 600,
+        'CONN_HEALTH_CHECKS': True,
         'OPTIONS': {
             'sslmode': 'require',
             # Sin esto, si la red hacia Supabase falla, una consulta puede
