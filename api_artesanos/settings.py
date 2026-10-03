@@ -165,3 +165,16 @@ else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER or 'no-responder@pakarishop.com')
+
+# ── HTTPS en producción ───────────────────────────────────────────────────────
+# Render termina el HTTPS en su propio servidor y le pasa la petición a Django
+# por HTTP normal avisando en esta cabecera que el cliente sí usó HTTPS; sin
+# esto Django cree que todas las peticiones son inseguras y no envía HSTS.
+# (La redirección de HTTP a HTTPS ya la hace Render en su entrada, por eso no
+# se activa SECURE_SSL_REDIRECT aquí: duplicarla puede confundir a sus
+# revisiones de salud internas.)
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_HSTS_SECONDS = 31536000
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True

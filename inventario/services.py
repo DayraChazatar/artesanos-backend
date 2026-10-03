@@ -3,6 +3,7 @@
 Lógica de negocio para todos los movimientos de inventario.
 Todas las funciones reciben objetos ya validados y retornan el Kardex creado.
 """
+import time
 from datetime import date, timedelta
 from django.db import transaction
 from django.utils import timezone
@@ -360,13 +361,26 @@ def registrar_devolucion(*, producto, cantidad, pedido_ref, nota='',
     )
 
 
-def liberar_pedidos_wompi_abandonados():
+_ultima_limpieza_wompi = 0.0
+# Cada consulta a la base de datos cuesta una vuelta de red completa (el servidor
+# y la base están en continentes distintos), así que el catálogo no necesita
+# revisar pedidos vencidos en CADA visita: con una vez cada 30 segundos basta.
+INTERVALO_LIMPIEZA_WOMPI = 30
+
+
+def liberar_pedidos_wompi_abandonados(forzar=False):
     """Cancela y libera el stock de los pedidos con Wompi que llevan más de
     MINUTOS_EXPIRACION_WOMPI en "Pago pendiente" sin que llegue confirmación
     (el cliente cerró la página antes de pagar, o simplemente se arrepintió).
     Se llama de paso en momentos donde importa que el stock esté al día —
     antes de reservar uno nuevo, y al mostrar el catálogo — así no hace falta
     un proceso aparte corriendo todo el tiempo."""
+    global _ultima_limpieza_wompi
+    ahora = time.monotonic()
+    if not forzar and ahora - _ultima_limpieza_wompi < INTERVALO_LIMPIEZA_WOMPI:
+        return
+    _ultima_limpieza_wompi = ahora
+
     limite = timezone.now() - timedelta(minutes=MINUTOS_EXPIRACION_WOMPI)
     vencidos = Pedido.objects.filter(
         estado='Pago pendiente', metodo_pago='wompi', fecha__lt=limite,

@@ -78,6 +78,12 @@ def crear_pedido(request):
     if usuario_actual is None or usuario_actual.id != data['cliente_id']:
         return Response({'error': 'No puedes crear un pedido a nombre de otro usuario.'}, status=status.HTTP_403_FORBIDDEN)
 
+    # La pantalla ya oculta los botones de compra a artesanos y administradores,
+    # pero esa regla solo existía en el navegador: quien llamara a la API
+    # directamente con una cuenta de artesano podía crear pedidos igual.
+    if usuario_actual.tipo != 'cliente':
+        return Response({'error': 'Solo las cuentas de cliente pueden realizar compras.'}, status=status.HTTP_403_FORBIDDEN)
+
     try:
         cliente = Usuario.objects.get(pk=data['cliente_id'])
     except Usuario.DoesNotExist:
@@ -90,7 +96,7 @@ def crear_pedido(request):
     # Libera primero el stock de pedidos de Wompi abandonados hace rato — así
     # el chequeo de disponibilidad de abajo usa números reales, no stock
     # fantasma reservado por alguien que nunca pagó.
-    liberar_pedidos_wompi_abandonados()
+    liberar_pedidos_wompi_abandonados(forzar=True)
 
     metodos_pago = data.get('metodos_pago') or {}
 

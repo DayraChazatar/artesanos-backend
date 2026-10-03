@@ -13,6 +13,7 @@ from rest_framework.decorators import api_view, action, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password, make_password
+from django.core.cache import cache
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from django.db import transaction
@@ -181,14 +182,28 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+MAX_FALLOS_LOGIN = 10
+BLOQUEO_LOGIN_SEGUNDOS = 600
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login(request):
     correo   = request.data.get('correo')
     password = request.data.get('password')
+
+    # Bloqueo temporal contra adivinar contraseñas: tras MAX_FALLOS_LOGIN
+    # intentos fallidos seguidos con el mismo correo, se pide esperar. Va por
+    # cuenta (no por IP) porque detrás del proxy de Render el límite por IP no
+    # distingue bien a cada visitante.
+    clave_fallos = f"login_fallos:{str(correo or '').strip().lower()}"
+    if cache.get(clave_fallos, 0) >= MAX_FALLOS_LOGIN:
+        return Response({'success': False, 'mensaje': 'Demasiados intentos fallidos. Espera 10 minutos e inténtalo de nuevo, o recupera tu contraseña.'})
+
     try:
         usuario = Usuario.objects.get(correo=correo)
         if check_password(password, usuario.password):
+            cache.delete(clave_fallos)
             if not usuario.activo:
                 return Response({'success': False, 'mensaje': 'Tu cuenta ha sido suspendida. Contacta al administrador si crees que es un error.'})
             auth_user, _ = User.objects.get_or_create(username=correo)
@@ -205,8 +220,10 @@ def login(request):
                 'token':   token.key,
                 'foto_url': _foto_url(usuario),
             })
+        cache.set(clave_fallos, cache.get(clave_fallos, 0) + 1, BLOQUEO_LOGIN_SEGUNDOS)
         return Response({'success': False, 'mensaje': 'Contraseña incorrecta'})
     except Usuario.DoesNotExist:
+        cache.set(clave_fallos, cache.get(clave_fallos, 0) + 1, BLOQUEO_LOGIN_SEGUNDOS)
         return Response({'success': False, 'mensaje': 'Usuario no encontrado'})
 
 # ── Login con Google ───────────────────────────────────────────────────────────

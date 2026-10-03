@@ -12,5 +12,5 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
-        liberar_pedidos_wompi_abandonados()
+        liberar_pedidos_wompi_abandonados(forzar=True)
         self.stdout.write(self.style.SUCCESS('Listo.'))
