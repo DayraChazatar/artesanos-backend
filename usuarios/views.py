@@ -229,7 +229,7 @@ def login(request):
 # ── Login con Google ───────────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.getenv(
     'GOOGLE_CLIENT_ID',
-    '845925419316-dnpgshd089pchteb2pvt2b5u55t96cn9.apps.googleusercontent.com',
+    '488911224398-v38b4s2o8317bu2j6jkia4e2i8vqh6i5.apps.googleusercontent.com',
 )
 
 
