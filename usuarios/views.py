@@ -238,13 +238,25 @@ GOOGLE_CLIENT_ID = os.getenv(
 def login_google(request):
     """
     Recibe el "credential" (id_token JWT) que entrega Google en el frontend,
-    lo valida contra los servidores de Google, y crea/vincula el Usuario real
-    para poder emitir un token de la app — así el login con Google también
-    funciona para carrito, perfil y pedidos, igual que el login normal.
+    lo valida contra los servidores de Google y emite un token de la app —
+    así el acceso con Google también funciona para carrito, perfil y pedidos,
+    igual que el login normal.
+
+    Tiene dos modos (campo "modo"):
+      · "login" (por defecto): solo entra a cuentas que YA existen. Si el
+        correo no está registrado responde 404 y no crea nada.
+      · "registro": crea la cuenta. Exige aceptar la política de datos y los
+        términos (acepta_terminos), igual que el formulario normal, y si el
+        tipo es "artesano" también la categoría (categoria_id). Si el correo
+        ya existe responde 409 y no toca la cuenta existente (ni su rol).
     """
     credential = request.data.get('credential')
     if not credential:
         return Response({'error': 'Falta el token de Google.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    modo = str(request.data.get('modo') or 'login').lower()
+    if modo not in ('login', 'registro'):
+        return Response({'error': 'Modo no válido.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         url = f'https://oauth2.googleapis.com/tokeninfo?id_token={credential}'
@@ -262,17 +274,46 @@ def login_google(request):
 
     correo = info.get('email')
     nombre = info.get('name') or correo.split('@')[0]
+    usuario = Usuario.objects.filter(correo=correo).first()
 
-    usuario, creado = Usuario.objects.get_or_create(
-        correo=correo,
-        defaults={
-            'nombre': nombre,
-            # Nunca se usa para iniciar sesión (solo Google puede autenticar
-            # esta cuenta), pero el campo es obligatorio en el modelo.
-            'password': make_password(secrets.token_urlsafe(24)),
-            'tipo': 'cliente',
-        },
-    )
+    if modo == 'login':
+        if usuario is None:
+            return Response({
+                'success': False, 'codigo': 'no_registrado',
+                'error': 'No hay una cuenta con este correo. Regístrate primero desde la pantalla de registro.',
+            }, status=status.HTTP_404_NOT_FOUND)
+    else:
+        if usuario is not None:
+            return Response({
+                'success': False, 'codigo': 'ya_registrado',
+                'error': 'Ya existe una cuenta con este correo. Inicia sesión.',
+            }, status=status.HTTP_409_CONFLICT)
+        if request.data.get('acepta_terminos') is not True:
+            return Response({'error': 'Debes aceptar la política de datos y los términos de uso.'}, status=status.HTTP_400_BAD_REQUEST)
+        tipo = str(request.data.get('tipo') or 'cliente').lower()
+        if tipo not in ('cliente', 'artesano'):
+            return Response({'error': 'Tipo de cuenta no válido.'}, status=status.HTTP_400_BAD_REQUEST)
+        categoria = None
+        if tipo == 'artesano':
+            categoria_id = request.data.get('categoria_id')
+            if not categoria_id:
+                return Response({'error': 'Debes seleccionar una categoría'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                categoria = Categoria.objects.get(pk=categoria_id)
+            except (Categoria.DoesNotExist, ValueError, TypeError):
+                return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
+        usuario = Usuario.objects.create(
+            correo=correo,
+            nombre=nombre,
+            # Nunca se usa para iniciar sesión con Google; si la persona quiere
+            # una contraseña propia usa "¿Olvidaste tu contraseña?". El campo
+            # es obligatorio en el modelo.
+            password=make_password(secrets.token_urlsafe(24)),
+            tipo=tipo,
+        )
+        if categoria is not None:
+            usuario.categoria = categoria
+            usuario.save(update_fields=['categoria'])
 
     auth_user, auth_creado = User.objects.get_or_create(username=correo)
     if auth_creado:
@@ -282,6 +323,7 @@ def login_google(request):
 
     return Response({
         'success': True,
+        'creado':  modo == 'registro',
         'id':      usuario.id,
         'nombre':  usuario.nombre,
         'correo':  usuario.correo,
