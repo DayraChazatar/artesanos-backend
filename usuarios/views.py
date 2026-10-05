@@ -780,6 +780,19 @@ def carga_masiva_productos(request):
     if not archivo:
         return Response({'error': 'Debes adjuntar un archivo .xlsx'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Excel 365 permite "Colocar en la celda" una imagen: se guarda aparte (xl/richData)
+    # y openpyxl no la puede leer. Se detecta aquí para avisarle al artesano en vez
+    # de dejar los productos sin foto sin explicar por qué.
+    fotos_en_celda = False
+    try:
+        import zipfile
+        archivo.seek(0)
+        with zipfile.ZipFile(archivo) as z:
+            fotos_en_celda = any(n.startswith('xl/richData/') for n in z.namelist())
+        archivo.seek(0)
+    except Exception:
+        archivo.seek(0)
+
     try:
         wb = load_workbook(archivo, data_only=True)
         ws = wb.active
@@ -793,12 +806,40 @@ def carga_masiva_productos(request):
     # Mapea cada imagen incrustada a la fila (1-indexada) donde el artesano
     # la puso, para poder emparejarla con los datos de esa misma fila.
     imagen_por_fila = {}
-    for img in getattr(ws, '_images', []):
+    # Las filas 1-4 son el encabezado de la plantilla (logo, título, instrucciones): una
+    # imagen ahí es la del logo, no la foto de un producto.
+    def _fila_de_imagen(i):
         try:
-            fila_imagen = img.anchor._from.row + 1
+            return i.anchor._from.row + 1
         except AttributeError:
+            return None
+    imagenes_totales = [i for i in getattr(ws, '_images', [])
+                        if (_fila_de_imagen(i) is None or _fila_de_imagen(i) >= FILA_ENCABEZADO_PLANTILLA)]
+    imagenes_sin_posicion = 0
+    primera_fila_datos = FILA_ENCABEZADO_PLANTILLA + 1
+    filas_con_datos = {
+        i for i, f in enumerate(filas, start=primera_fila_datos)
+        if f is not None and not all(c is None or str(c).strip() == '' for c in f)
+    }
+    for img in imagenes_totales:
+        try:
+            desde = img.anchor._from.row + 1
+        except AttributeError:
+            imagenes_sin_posicion += 1  # imagen con posición absoluta: no se sabe en qué fila quedó
             continue
-        imagen_por_fila.setdefault(fila_imagen, img)
+        hasta = desde
+        try:
+            hasta = max(desde, img.anchor.to.row + 1)
+        except AttributeError:
+            pass
+        if desde in filas_con_datos:
+            imagen_por_fila.setdefault(desde, img)
+        else:
+            # la imagen empieza en una fila sin producto; si abarca varias filas y
+            # exactamente UNA tiene producto, es de esa. Si hay duda, no se adivina.
+            cubiertas = [r for r in range(desde, hasta + 1) if r in filas_con_datos]
+            if len(cubiertas) == 1:
+                imagen_por_fila.setdefault(cubiertas[0], img)
 
     creados = []
     errores = []
@@ -914,6 +955,20 @@ def carga_masiva_productos(request):
             creados.append({'fila': idx, 'nombre': nombre})
         else:
             errores.append({'fila': idx, 'nombre': nombre, 'error': serializer.errors})
+
+    # ¿Quedaron fotos del Excel sin usar? Se avisa (sin adivinar a qué producto pertenecen).
+    if fotos_en_celda:
+        avisos.append({'fila': 0, 'nombre': 'Fotos del Excel',
+                       'mensaje': 'El archivo tiene imágenes colocadas "en la celda", que no se pueden leer. '
+                                  'Insértalas con Insertar → Imágenes → "Colocar sobre las celdas" y que cada una '
+                                  'quede dentro de la fila de su producto.'})
+    elif imagenes_totales:
+        sin_fila = len(imagenes_totales) - len(imagen_por_fila)
+        if sin_fila > 0:
+            avisos.append({'fila': 0, 'nombre': 'Fotos del Excel',
+                           'mensaje': f'{sin_fila} imagen(es) del Excel no quedaron dentro de la fila de un producto '
+                                      '(o se repiten en la misma fila) y se ignoraron. Cada foto debe empezar en la fila '
+                                      'de su producto, una por fila.'})
 
     return Response({
         'total_filas':     len(filas),
