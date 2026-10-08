@@ -20,7 +20,7 @@ from django.db import transaction
 from django.db.models import Sum, F, Q
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.http import HttpResponse
+from django.http import HttpResponse, QueryDict
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -302,9 +302,13 @@ def login_google(request):
                 categoria = Categoria.objects.get(pk=categoria_id)
             except (Categoria.DoesNotExist, ValueError, TypeError):
                 return Response({'error': 'Categoría no encontrada'}, status=status.HTTP_400_BAD_REQUEST)
+        telefono = str(request.data.get('telefono') or '').strip()[:20] or None
+        biografia = str(request.data.get('biografia') or '').strip() or None
         usuario = Usuario.objects.create(
             correo=correo,
             nombre=nombre,
+            telefono=telefono,
+            biografia=biografia,
             # Nunca se usa para iniciar sesión con Google; si la persona quiere
             # una contraseña propia usa "¿Olvidaste tu contraseña?". El campo
             # es obligatorio en el modelo.
@@ -512,7 +516,17 @@ class ProductoViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         import uuid
         imagen = request.FILES.get('imagen')
-        data = request.data.copy()
+        # Se copian solo los campos de texto. Antes se hacía request.data.copy(), que
+        # también intenta copiar el archivo subido: con fotos de más de 2,5 MB (casi
+        # todas las de la cámara de un celular) Django las guarda en un archivo
+        # temporal que no se puede copiar, y la creación del producto fallaba con 500.
+        if hasattr(request.data, 'getlist'):
+            data = QueryDict(mutable=True)
+            for clave in request.data.keys():
+                if clave not in request.FILES:
+                    data.setlist(clave, request.data.getlist(clave))
+        else:
+            data = dict(request.data)
 
         usuario_actual = get_usuario_actual(request)
         if usuario_actual is None or usuario_actual.tipo != 'artesano':
@@ -524,9 +538,17 @@ class ProductoViewSet(viewsets.ModelViewSet):
         data['visible'] = True  # todo producto nuevo nace visible en el catálogo
 
         if imagen:
-           filename = f"{uuid.uuid4()}_{imagen.name}"
-           url = upload_image(imagen, 'productos', filename)
-           data['imagen'] = url
+            filename = f"{uuid.uuid4()}_{imagen.name}"
+            try:
+                url = upload_image(imagen, 'productos', filename)
+            except Exception:
+                # Mejor avisar con un mensaje claro que crear el producto sin su foto
+                # en silencio o devolver una página de error genérica.
+                return Response(
+                    {'error': 'No se pudo guardar la foto del producto. Intenta de nuevo o con otra foto.'},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            data['imagen'] = url
         else:
             data.pop('imagen', None)
 
